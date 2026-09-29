@@ -40,9 +40,25 @@ def get_local_ip():
             return "127.0.0.1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "готовые_графики")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-OUTPUT_FILE = os.path.join(BASE_DIR, "Недельные графики (готовый).xlsx")
+
+def get_desktop_dir():
+    """Возвращает путь к папке 'Готовые недельные графики' на Рабочем столе пользователя"""
+    user_home = os.path.expanduser("~")
+    candidates = [
+        os.path.join(user_home, "OneDrive", "Рабочий стол"),
+        os.path.join(user_home, "OneDrive", "Desktop"),
+        os.path.join(user_home, "Рабочий стол"),
+        os.path.join(user_home, "Desktop"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            folder = os.path.join(c, "Готовые недельные графики")
+            os.makedirs(folder, exist_ok=True)
+            return folder
+            
+    folder = os.path.join(user_home, "Desktop", "Готовые недельные графики")
+    os.makedirs(folder, exist_ok=True)
+    return folder
 
 def load_carriers_contacts():
     """Загружает справочник email-адресов перевозчиков из carriers_contacts.json"""
@@ -68,9 +84,12 @@ CURRENT_STATE = {
     "week_range": "",
     "total_trips": 0,
     "carriers": [],
-    "last_output_path": OUTPUT_FILE,
-    "last_output_filename": "Недельные графики (готовый).xlsx"
+    "last_output_path": None,
+    "last_output_filename": None
 }
+
+class SelectFileRequest(BaseModel):
+    filename: str
 
 class EmailRequest(BaseModel):
     mode: str # 'draft' или 'send'
@@ -153,6 +172,12 @@ def index_page():
     .modal-body { padding: 20px 24px; }
     .modal-footer { padding: 16px 24px; background: #f8fafc; border-top: 1px solid var(--border-light); display: flex; justify-content: flex-end; gap: 10px; }
 
+    .file-item { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border-light); cursor: pointer; transition: background 0.15s; }
+    .file-item:last-child { border-bottom: none; }
+    .file-item:hover { background: #f8fafc; }
+    .file-item.active { background: #eff6ff; }
+    .file-item input[type="radio"] { accent-color: var(--primary); width: 18px; height: 18px; }
+
     .form-group { margin-bottom: 16px; }
     .form-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
     .form-control { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
@@ -176,15 +201,18 @@ def index_page():
 
     <!-- Шаг 1: Загрузка файла -->
     <div class="card">
-      <div class="card-title">📁 1. Загрузите файл плана (.xlsm) или готовый график (.xlsx)</div>
+      <div class="card-title">📁 1. Загрузите файл плана (.xlsm)</div>
       <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
         <div class="dropzone-icon">📥</div>
-        <div class="dropzone-text" id="dropzoneText">Нажмите или перетащите сюда файл плана (.xlsm) или отредактированный (.xlsx)</div>
-        <div class="dropzone-subtext">Поддерживается 'График_отгрузки_филиалов.xlsm' либо скорректированный Excel-файл с ручными правками</div>
+        <div class="dropzone-text" id="dropzoneText">Нажмите или перетащите сюда файл плана (.xlsm)</div>
+        <div class="dropzone-subtext">Поддерживается базовый файл плана 'График_отгрузки_филиалов.xlsm'</div>
       </div>
       <input type="file" id="fileInput" accept=".xlsm,.xlsx" style="display:none" onchange="handleFileSelected(event)">
       
-      <div style="margin-top: 15px; display: flex; justify-content: flex-end;">
+      <div style="margin-top: 15px; display: flex; justify-content: space-between; align-items: center;">
+        <button class="btn btn-outline" onclick="openFileSelectModal()" style="font-size: 13px; padding: 9px 16px; background: #fff;">
+          📂 Выбрать готовый график с Рабочего стола...
+        </button>
         <button class="btn btn-primary" id="processBtn" style="display:none;" onclick="uploadAndProcess()">⚡ Обработать файл</button>
       </div>
     </div>
@@ -208,13 +236,26 @@ def index_page():
         </div>
       </div>
 
-      <div style="display: flex; gap: 10px; margin: 15px 0;">
-        <a href="/api/download" id="downloadBtn" class="btn btn-success" style="flex: 2; padding: 12px; font-size: 15px;">
-          📥 Скачать готовый график (.xlsx)
-        </a>
-        <button class="btn btn-outline" onclick="reloadFromDisk()" title="Если вы внесли ручные правки в Excel-файл на компьютере, нажмите сюда, чтобы обновить данные перед отправкой" style="flex: 1; padding: 12px; font-size: 14px; background: #fff;">
-          🔄 Обновить из Excel
-        </button>
+      <!-- Блок информации о файле на рабочем столе и кнопка Обновить из Excel -->
+      <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px 18px; margin: 15px 0;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 15px; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 250px;">
+            <div style="font-size: 14px; font-weight: 700; color: #166534; display: flex; align-items: center; gap: 8px;">
+              📁 Файл на Рабочем столе
+            </div>
+            <div style="font-size: 12px; color: #1e293b; margin-top: 3px;">
+              Папка: <b>Рабочий стол / Готовые недельные графики</b>
+            </div>
+            <div style="font-size: 13px; font-weight: 600; color: var(--primary); margin-top: 4px;" id="currentFileLabel">
+              Файл: -
+            </div>
+          </div>
+          <div>
+            <button class="btn btn-primary" onclick="openFileSelectModal()" style="padding: 10px 18px; font-size: 14px; gap: 6px;">
+              🔄 Обновить из Excel
+            </button>
+          </div>
+        </div>
       </div>
       <div id="reloadNotice" style="display:none; padding: 10px 14px; background: #e0f2fe; border: 1px solid #7dd3fc; border-radius: 8px; font-size: 13px; color: #0369a1; margin-bottom: 15px;"></div>
 
@@ -290,6 +331,36 @@ def index_page():
     </div>
   </div>
 
+  <!-- Модальное окно выбора файла из папки на Рабочем столе -->
+  <div class="modal-backdrop" id="fileSelectModal">
+    <div class="modal" style="max-width: 600px;">
+      <div class="modal-header">
+        <h3>🔄 Выбор файла из «Готовые недельные графики»</h3>
+        <button class="modal-close" onclick="closeFileSelectModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+          Файлы в папке на Рабочем столе отсортированы по дате изменения (новые — сверху). Выберите нужный файл для загрузки исправлений и отправки рассылки:
+        </p>
+
+        <div id="filesLoading" style="text-align: center; padding: 25px; color: var(--text-muted); font-size: 13px;">
+          ⏳ Чтение файлов на Рабочем столе...
+        </div>
+
+        <div id="filesContainer" style="display:none; max-height: 280px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: 8px;">
+        </div>
+
+        <div id="noFilesMsg" style="display:none; text-align: center; padding: 20px; color: var(--text-muted); font-size: 13px;">
+          В папке «Готовые недельные графики» на Рабочем столе пока нет файлов Excel. Сначала загрузите и обработайте файл плана.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeFileSelectModal()">Отмена</button>
+        <button class="btn btn-primary" id="confirmFileSelectBtn" onclick="confirmSelectedFile()" disabled>Выбрать и обновить данные</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let selectedFile = null;
     let availableCarriers = [];
@@ -333,6 +404,7 @@ def index_page():
           document.getElementById('statWeek').innerText = data.week_range;
           document.getElementById('statTotal').innerText = data.total_trips + ' машин';
           document.getElementById('statCarriers').innerText = data.carriers.length;
+          document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
 
           availableCarriers = data.carriers;
           const container = document.getElementById('carriersContainer');
@@ -345,14 +417,6 @@ def index_page():
             select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов)</option>`;
           });
 
-          if (data.filename) {
-            document.getElementById('downloadBtn').innerText = '📥 Скачать ' + data.filename;
-          }
-          if (data.is_edited) {
-            const notice = document.getElementById('reloadNotice');
-            notice.style.display = 'block';
-            notice.innerHTML = `✅ <b>Загружен скорректированный итоговый файл!</b> Все ручные правки учтены.`;
-          }
           document.getElementById('resultCard').style.display = 'block';
           document.getElementById('emailCard').style.display = 'block';
           processBtn.innerText = '✅ Обработано';
@@ -368,14 +432,82 @@ def index_page():
       }
     }
 
-    async function reloadFromDisk() {
+    async function openFileSelectModal() {
+      const modal = document.getElementById('fileSelectModal');
+      const container = document.getElementById('filesContainer');
+      const loading = document.getElementById('filesLoading');
+      const noFiles = document.getElementById('noFilesMsg');
+      const confirmBtn = document.getElementById('confirmFileSelectBtn');
+
+      modal.classList.add('active');
+      container.style.display = 'none';
+      noFiles.style.display = 'none';
+      loading.style.display = 'block';
+      confirmBtn.disabled = true;
+
       try {
-        const resp = await fetch('/api/reload-disk', { method: 'POST' });
+        const resp = await fetch('/api/list-ready-files');
         const data = await resp.json();
+        loading.style.display = 'none';
+
+        if (data.status === 'success' && data.files && data.files.length > 0) {
+          container.innerHTML = '';
+          data.files.forEach((f, idx) => {
+            const isChecked = f.is_current || (idx === 0);
+            container.innerHTML += `
+              <label class="file-item ${isChecked ? 'active' : ''}">
+                <input type="radio" name="fileSelectRadio" value="${f.filename}" ${isChecked ? 'checked' : ''} onchange="onFileRadioChange(this)">
+                <div style="flex:1;">
+                  <div style="font-weight: 600; font-size: 13px; color: var(--text);">📊 ${f.filename}</div>
+                  <div style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+                    Изменен: <b>${f.mtime_str}</b> &bull; Размер: ${f.size}
+                  </div>
+                </div>
+              </label>
+            `;
+          });
+          container.style.display = 'block';
+          confirmBtn.disabled = false;
+        } else {
+          noFiles.style.display = 'block';
+        }
+      } catch (e) {
+        loading.innerHTML = '❌ Ошибка чтения папки на Рабочем столе: ' + e;
+      }
+    }
+
+    function onFileRadioChange(radio) {
+      document.querySelectorAll('.file-item').forEach(el => el.classList.remove('active'));
+      radio.closest('.file-item').classList.add('active');
+      document.getElementById('confirmFileSelectBtn').disabled = false;
+    }
+
+    function closeFileSelectModal() {
+      document.getElementById('fileSelectModal').classList.remove('active');
+    }
+
+    async function confirmSelectedFile() {
+      const selected = document.querySelector('input[name="fileSelectRadio"]:checked');
+      if (!selected) return;
+
+      const filename = selected.value;
+      const confirmBtn = document.getElementById('confirmFileSelectBtn');
+      confirmBtn.disabled = true;
+      confirmBtn.innerText = '⏳ Загрузка...';
+
+      try {
+        const resp = await fetch('/api/select-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: filename })
+        });
+        const data = await resp.json();
+
         if (data.status === 'success') {
           document.getElementById('statWeek').innerText = data.week_range;
           document.getElementById('statTotal').innerText = data.total_trips + ' машин';
           document.getElementById('statCarriers').innerText = data.carriers.length;
+          document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
 
           availableCarriers = data.carriers;
           const container = document.getElementById('carriersContainer');
@@ -388,15 +520,23 @@ def index_page():
             select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов)</option>`;
           });
 
+          document.getElementById('resultCard').style.display = 'block';
+          document.getElementById('emailCard').style.display = 'block';
+
           const notice = document.getElementById('reloadNotice');
           notice.style.display = 'block';
-          notice.innerHTML = `✅ <b>Данные успешно обновлены из Excel!</b> Учтены все ручные изменения (всего рейсов: ${data.total_trips}). Рассылка будет произведена строго по ним.`;
-          setTimeout(() => { notice.style.display = 'none'; }, 6000);
+          notice.innerHTML = `✅ <b>Данные успешно загружены из файла:</b> ${data.filename}<br>Всего рейсов: <b>${data.total_trips}</b>. Рассылка перестроена под этот файл!`;
+          setTimeout(() => { notice.style.display = 'none'; }, 7000);
+
+          closeFileSelectModal();
         } else {
-          alert('Ошибка обновления: ' + data.message);
+          alert('Ошибка загрузки данных: ' + data.message);
         }
       } catch (e) {
         alert('Ошибка связи с сервером: ' + e);
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.innerText = 'Выбрать и обновить данные';
       }
     }
 
@@ -475,6 +615,7 @@ async def upload_file(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, f)
             
         base_name = os.path.splitext(file.filename)[0]
+        desktop_dir = get_desktop_dir()
         
         # Проверяем: не является ли файл уже готовым скорректированным графиком (.xlsx с листами дней)?
         is_edited_schedule = False
@@ -491,12 +632,8 @@ async def upload_file(file: UploadFile = File(...)):
         if is_edited_schedule and all_trips:
             # Загружен файл, который уже правили руками
             out_filename = file.filename
-            target_path = os.path.join(OUTPUT_DIR, out_filename)
+            target_path = os.path.join(desktop_dir, out_filename)
             shutil.copy2(temp_path, target_path)
-            try:
-                shutil.copy2(temp_path, OUTPUT_FILE)
-            except Exception:
-                pass
         else:
             # Запускаем генерацию из базового плана
             plan_trips, start_date = core.parse_plan_file(temp_path)
@@ -507,13 +644,7 @@ async def upload_file(file: UploadFile = File(...)):
             
             clean_name = base_name.replace(" (готовый)", "")
             out_filename = f"{clean_name} ({date_range_str}).xlsx"
-            
-            # Подпапка по месяцам: например, готовые_графики/2026-10 (Октябрь)/
-            month_name = core.RUSSIAN_MONTHS.get(start_date.month, '')
-            month_folder = f"{start_date.year}-{start_date.month:02d} ({month_name})"
-            month_dir = os.path.join(OUTPUT_DIR, month_folder)
-            os.makedirs(month_dir, exist_ok=True)
-            target_path = os.path.join(month_dir, out_filename)
+            target_path = os.path.join(desktop_dir, out_filename)
             
             # Защита от блокировки в Excel: если файл уже открыт кем-то на компьютере
             try:
@@ -521,18 +652,8 @@ async def upload_file(file: UploadFile = File(...)):
             except PermissionError:
                 import time
                 out_filename = f"{clean_name} ({date_range_str})_{int(time.time())}.xlsx"
-                target_path = os.path.join(month_dir, out_filename)
+                target_path = os.path.join(desktop_dir, out_filename)
                 all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
-                
-            # Копия в корень готовые_графики/ и в основной файл Недельные графики (готовый).xlsx
-            try:
-                shutil.copy2(target_path, os.path.join(OUTPUT_DIR, out_filename))
-            except Exception:
-                pass
-            try:
-                shutil.copy2(target_path, OUTPUT_FILE)
-            except Exception:
-                pass
         
         # Считаем статистику
         carrier_counts = Counter([t['carrier'] for t in all_trips if t.get('carrier')])
@@ -559,57 +680,87 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.post("/api/reload-disk")
-def reload_disk():
-    target_file = CURRENT_STATE.get("last_output_path") or OUTPUT_FILE
-    if not target_file or not os.path.exists(target_file):
-        target_file = OUTPUT_FILE
-    if not os.path.exists(target_file):
-        return {"status": "error", "message": "Файл графика еще не создан на сервере"}
-        
+@app.get("/api/list-ready-files")
+def list_ready_files():
     try:
-        disk_trips = core.parse_final_schedule_file(target_file)
-        if not disk_trips:
-            return {"status": "error", "message": "В файле не найдено строк с рейсами"}
+        desktop_dir = get_desktop_dir()
+        if not os.path.exists(desktop_dir):
+            return {"status": "success", "files": []}
+        
+        files_info = []
+        current_path = CURRENT_STATE.get("last_output_path")
+        
+        for fname in os.listdir(desktop_dir):
+            if fname.startswith("~$") or not fname.endswith((".xlsx", ".xlsm")):
+                continue
+            full_path = os.path.join(desktop_dir, fname)
+            if not os.path.isfile(full_path):
+                continue
             
-        carrier_counts = Counter([t['carrier'] for t in disk_trips if t.get('carrier')])
-        dates = [t['date'] for t in disk_trips]
+            stat = os.stat(full_path)
+            mtime = stat.st_mtime
+            mtime_str = datetime.fromtimestamp(mtime).strftime("%d.%m.%Y %H:%M:%S")
+            
+            size_bytes = stat.st_size
+            if size_bytes < 1024 * 1024:
+                size_str = f"{size_bytes / 1024:.1f} КБ"
+            else:
+                size_str = f"{size_bytes / (1024 * 1024):.2f} МБ"
+                
+            is_current = bool(current_path and os.path.abspath(full_path) == os.path.abspath(current_path))
+            
+            files_info.append({
+                "filename": fname,
+                "mtime": mtime,
+                "mtime_str": mtime_str,
+                "size": size_str,
+                "is_current": is_current
+            })
+            
+        # Сортировка: самые свежие сверху
+        files_info.sort(key=lambda x: x["mtime"], reverse=True)
+        return {"status": "success", "files": files_info}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "files": []}
+
+@app.post("/api/select-file")
+def select_file(req: SelectFileRequest):
+    try:
+        desktop_dir = get_desktop_dir()
+        target_path = os.path.join(desktop_dir, req.filename)
+        if not os.path.exists(target_path):
+            return {"status": "error", "message": f"Файл не найден: {req.filename}"}
+            
+        trips = core.parse_final_schedule_file(target_path)
+        if not trips:
+            return {"status": "error", "message": "В выбранном файле не найдено строк с рейсами"}
+            
+        carrier_counts = Counter([t['carrier'] for t in trips if t.get('carrier')])
+        dates = [t['date'] for t in trips]
         week_range = f"{dates[0]} - {dates[-1]}" if dates else ""
         carriers_list = [{"name": k, "count": v} for k, v in carrier_counts.most_common()]
         
-        CURRENT_STATE["all_trips"] = disk_trips
+        CURRENT_STATE["all_trips"] = trips
         CURRENT_STATE["week_range"] = week_range
-        CURRENT_STATE["total_trips"] = len(disk_trips)
+        CURRENT_STATE["total_trips"] = len(trips)
         CURRENT_STATE["carriers"] = carriers_list
+        CURRENT_STATE["last_output_path"] = target_path
+        CURRENT_STATE["last_output_filename"] = req.filename
         
         return {
             "status": "success",
+            "filename": req.filename,
             "week_range": week_range,
-            "total_trips": len(disk_trips),
+            "total_trips": len(trips),
             "carriers": carriers_list
         }
     except Exception as e:
-        return {"status": "error", "message": f"Ошибка чтения файла Excel: {str(e)}"}
-
-@app.get("/api/download")
-def download_schedule():
-    file_path = CURRENT_STATE.get("last_output_path")
-    filename = CURRENT_STATE.get("last_output_filename", "Недельные графики (готовый).xlsx")
-    if not file_path or not os.path.exists(file_path):
-        file_path = OUTPUT_FILE
-        filename = "Недельные графики (готовый).xlsx"
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Файл еще не сформирован")
-    return FileResponse(
-        file_path,
-        filename=filename,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        return {"status": "error", "message": f"Ошибка чтения файла: {str(e)}"}
 
 @app.post("/api/send-emails")
 def send_emails(req: EmailRequest):
     # ПЕРЕД ОТПРАВКОЙ: перечитываем актуальный файл с диска со всеми ручными правками!
-    target_file = CURRENT_STATE.get("last_output_path") or OUTPUT_FILE
+    target_file = CURRENT_STATE.get("last_output_path")
     if target_file and os.path.exists(target_file):
         try:
             disk_trips = core.parse_final_schedule_file(target_file)
@@ -620,15 +771,7 @@ def send_emails(req: EmailRequest):
 
     trips_to_send = CURRENT_STATE.get("all_trips", [])
     if not trips_to_send:
-        # Если в памяти нет, пробуем перечитать дефолтный файл
-        default_plan = core.find_default_plan_file(BASE_DIR)
-        if default_plan and os.path.exists(default_plan):
-            plan_trips, start_date = core.parse_plan_file(default_plan)
-            trips_to_send = core.build_schedule_from_plan(plan_trips, start_date, OUTPUT_FILE)
-            CURRENT_STATE["all_trips"] = trips_to_send
-            
-    if not trips_to_send:
-        return {"status": "error", "message": "Нет данных для отправки. Сначала загрузите файл плана!"}
+        return {"status": "error", "message": "Нет данных для отправки. Сначала загрузите и выберите файл плана!"}
 
     # Фильтрация по перевозчику, если указан конкретный
     if req.carrier:
@@ -676,7 +819,6 @@ def send_emails(req: EmailRequest):
         return {"status": "success", "message": msg, "count": sent_count}
         
     except ImportError:
-        # Для Mac/Linux или если pywin32 не установлен
         action_text = "черновиков" if draft_mode else "отправки"
         msg = f"Библиотека pywin32 не установлена (требуется Windows + Outlook). Готово к работе {len(target_carriers)} писем {action_text}."
         return {"status": "success", "message": msg, "count": len(target_carriers)}
