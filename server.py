@@ -176,11 +176,11 @@ def index_page():
 
     <!-- Шаг 1: Загрузка файла -->
     <div class="card">
-      <div class="card-title">📁 1. Загрузите файл базового плана (.xlsm)</div>
+      <div class="card-title">📁 1. Загрузите файл плана (.xlsm) или готовый график (.xlsx)</div>
       <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
         <div class="dropzone-icon">📥</div>
-        <div class="dropzone-text" id="dropzoneText">Нажмите или перетащите сюда файл плана</div>
-        <div class="dropzone-subtext">Поддерживается 'График_отгрузки_филиалов_неделя_2.xlsm' (или любой .xlsm)</div>
+        <div class="dropzone-text" id="dropzoneText">Нажмите или перетащите сюда файл плана (.xlsm) или отредактированный (.xlsx)</div>
+        <div class="dropzone-subtext">Поддерживается 'График_отгрузки_филиалов.xlsm' либо скорректированный Excel-файл с ручными правками</div>
       </div>
       <input type="file" id="fileInput" accept=".xlsm,.xlsx" style="display:none" onchange="handleFileSelected(event)">
       
@@ -208,11 +208,15 @@ def index_page():
         </div>
       </div>
 
-      <div style="margin: 15px 0;">
-        <a href="/api/download" id="downloadBtn" class="btn btn-success btn-block" style="padding: 12px; font-size: 15px;">
+      <div style="display: flex; gap: 10px; margin: 15px 0;">
+        <a href="/api/download" id="downloadBtn" class="btn btn-success" style="flex: 2; padding: 12px; font-size: 15px;">
           📥 Скачать готовый график (.xlsx)
         </a>
+        <button class="btn btn-outline" onclick="reloadFromDisk()" title="Если вы внесли ручные правки в Excel-файл на компьютере, нажмите сюда, чтобы обновить данные перед отправкой" style="flex: 1; padding: 12px; font-size: 14px; background: #fff;">
+          🔄 Обновить из Excel
+        </button>
       </div>
+      <div id="reloadNotice" style="display:none; padding: 10px 14px; background: #e0f2fe; border: 1px solid #7dd3fc; border-radius: 8px; font-size: 13px; color: #0369a1; margin-bottom: 15px;"></div>
 
       <div style="font-size: 13px; font-weight: 600; margin-top: 20px; color: var(--text-muted);">
         Распределение рейсов по перевозчикам:
@@ -344,6 +348,11 @@ def index_page():
           if (data.filename) {
             document.getElementById('downloadBtn').innerText = '📥 Скачать ' + data.filename;
           }
+          if (data.is_edited) {
+            const notice = document.getElementById('reloadNotice');
+            notice.style.display = 'block';
+            notice.innerHTML = `✅ <b>Загружен скорректированный итоговый файл!</b> Все ручные правки учтены.`;
+          }
           document.getElementById('resultCard').style.display = 'block';
           document.getElementById('emailCard').style.display = 'block';
           processBtn.innerText = '✅ Обработано';
@@ -356,6 +365,38 @@ def index_page():
         alert('Ошибка при соединении с сервером: ' + err);
         processBtn.disabled = false;
         processBtn.innerText = '⚡ Обработать файл';
+      }
+    }
+
+    async function reloadFromDisk() {
+      try {
+        const resp = await fetch('/api/reload-disk', { method: 'POST' });
+        const data = await resp.json();
+        if (data.status === 'success') {
+          document.getElementById('statWeek').innerText = data.week_range;
+          document.getElementById('statTotal').innerText = data.total_trips + ' машин';
+          document.getElementById('statCarriers').innerText = data.carriers.length;
+
+          availableCarriers = data.carriers;
+          const container = document.getElementById('carriersContainer');
+          container.innerHTML = '';
+          const select = document.getElementById('carrierSelect');
+          select.innerHTML = '';
+
+          data.carriers.forEach(c => {
+            container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count}</span></div>`;
+            select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов)</option>`;
+          });
+
+          const notice = document.getElementById('reloadNotice');
+          notice.style.display = 'block';
+          notice.innerHTML = `✅ <b>Данные успешно обновлены из Excel!</b> Учтены все ручные изменения (всего рейсов: ${data.total_trips}). Рассылка будет произведена строго по ним.`;
+          setTimeout(() => { notice.style.display = 'none'; }, 6000);
+        } else {
+          alert('Ошибка обновления: ' + data.message);
+        }
+      } catch (e) {
+        alert('Ошибка связи с сервером: ' + e);
       }
     }
 
@@ -433,47 +474,70 @@ async def upload_file(file: UploadFile = File(...)):
         with open(temp_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
             
-        # Запускаем парсинг
-        plan_trips, start_date = core.parse_plan_file(temp_path)
-        
-        # Точные календарные границы недели
-        end_date = start_date + timedelta(days=6)
-        date_range_str = f"{start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m.%Y')}"
-        
-        # Имя файла с датами: например, График_отгрузки_филиалов_неделя_2 (28.09 - 04.10.2026).xlsx
         base_name = os.path.splitext(file.filename)[0]
-        out_filename = f"{base_name} ({date_range_str}).xlsx"
         
-        # Подпапка по месяцам: например, готовые_графики/2026-10 (Октябрь)/
-        month_name = core.RUSSIAN_MONTHS.get(start_date.month, '')
-        month_folder = f"{start_date.year}-{start_date.month:02d} ({month_name})"
-        month_dir = os.path.join(OUTPUT_DIR, month_folder)
-        os.makedirs(month_dir, exist_ok=True)
-        target_path = os.path.join(month_dir, out_filename)
-        
-        # Защита от блокировки в Excel: если файл уже открыт кем-то на компьютере
-        try:
-            all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
-        except PermissionError:
-            import time
-            out_filename = f"{base_name} ({date_range_str})_{int(time.time())}.xlsx"
-            target_path = os.path.join(month_dir, out_filename)
-            all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
+        # Проверяем: не является ли файл уже готовым скорректированным графиком (.xlsx с листами дней)?
+        is_edited_schedule = False
+        all_trips = []
+        if file.filename.endswith(('.xlsx', '.xlsm')):
+            try:
+                test_trips = core.parse_final_schedule_file(temp_path)
+                if len(test_trips) > 0:
+                    is_edited_schedule = True
+                    all_trips = test_trips
+            except Exception:
+                is_edited_schedule = False
+
+        if is_edited_schedule and all_trips:
+            # Загружен файл, который уже правили руками
+            out_filename = file.filename
+            target_path = os.path.join(OUTPUT_DIR, out_filename)
+            shutil.copy2(temp_path, target_path)
+            try:
+                shutil.copy2(temp_path, OUTPUT_FILE)
+            except Exception:
+                pass
+        else:
+            # Запускаем генерацию из базового плана
+            plan_trips, start_date = core.parse_plan_file(temp_path)
             
-        # Копия в корень готовые_графики/ и в основной файл Недельные графики (готовый).xlsx
-        try:
-            shutil.copy2(target_path, os.path.join(OUTPUT_DIR, out_filename))
-        except Exception:
-            pass
-        try:
-            shutil.copy2(target_path, OUTPUT_FILE)
-        except Exception:
-            pass
+            # Точные календарные границы недели
+            end_date = start_date + timedelta(days=6)
+            date_range_str = f"{start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m.%Y')}"
+            
+            clean_name = base_name.replace(" (готовый)", "")
+            out_filename = f"{clean_name} ({date_range_str}).xlsx"
+            
+            # Подпапка по месяцам: например, готовые_графики/2026-10 (Октябрь)/
+            month_name = core.RUSSIAN_MONTHS.get(start_date.month, '')
+            month_folder = f"{start_date.year}-{start_date.month:02d} ({month_name})"
+            month_dir = os.path.join(OUTPUT_DIR, month_folder)
+            os.makedirs(month_dir, exist_ok=True)
+            target_path = os.path.join(month_dir, out_filename)
+            
+            # Защита от блокировки в Excel: если файл уже открыт кем-то на компьютере
+            try:
+                all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
+            except PermissionError:
+                import time
+                out_filename = f"{clean_name} ({date_range_str})_{int(time.time())}.xlsx"
+                target_path = os.path.join(month_dir, out_filename)
+                all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
+                
+            # Копия в корень готовые_графики/ и в основной файл Недельные графики (готовый).xlsx
+            try:
+                shutil.copy2(target_path, os.path.join(OUTPUT_DIR, out_filename))
+            except Exception:
+                pass
+            try:
+                shutil.copy2(target_path, OUTPUT_FILE)
+            except Exception:
+                pass
         
         # Считаем статистику
         carrier_counts = Counter([t['carrier'] for t in all_trips if t.get('carrier')])
         dates = [t['date'] for t in all_trips]
-        week_range = f"{dates[0]} - {dates[-1]}" if dates else "28.09 - 04.10"
+        week_range = f"{dates[0]} - {dates[-1]}" if dates else ""
         
         carriers_list = [{"name": k, "count": v} for k, v in carrier_counts.most_common()]
         
@@ -489,10 +553,43 @@ async def upload_file(file: UploadFile = File(...)):
             "week_range": week_range,
             "total_trips": len(all_trips),
             "carriers": carriers_list,
-            "filename": out_filename
+            "filename": out_filename,
+            "is_edited": is_edited_schedule
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.post("/api/reload-disk")
+def reload_disk():
+    target_file = CURRENT_STATE.get("last_output_path") or OUTPUT_FILE
+    if not target_file or not os.path.exists(target_file):
+        target_file = OUTPUT_FILE
+    if not os.path.exists(target_file):
+        return {"status": "error", "message": "Файл графика еще не создан на сервере"}
+        
+    try:
+        disk_trips = core.parse_final_schedule_file(target_file)
+        if not disk_trips:
+            return {"status": "error", "message": "В файле не найдено строк с рейсами"}
+            
+        carrier_counts = Counter([t['carrier'] for t in disk_trips if t.get('carrier')])
+        dates = [t['date'] for t in disk_trips]
+        week_range = f"{dates[0]} - {dates[-1]}" if dates else ""
+        carriers_list = [{"name": k, "count": v} for k, v in carrier_counts.most_common()]
+        
+        CURRENT_STATE["all_trips"] = disk_trips
+        CURRENT_STATE["week_range"] = week_range
+        CURRENT_STATE["total_trips"] = len(disk_trips)
+        CURRENT_STATE["carriers"] = carriers_list
+        
+        return {
+            "status": "success",
+            "week_range": week_range,
+            "total_trips": len(disk_trips),
+            "carriers": carriers_list
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Ошибка чтения файла Excel: {str(e)}"}
 
 @app.get("/api/download")
 def download_schedule():
@@ -511,6 +608,16 @@ def download_schedule():
 
 @app.post("/api/send-emails")
 def send_emails(req: EmailRequest):
+    # ПЕРЕД ОТПРАВКОЙ: перечитываем актуальный файл с диска со всеми ручными правками!
+    target_file = CURRENT_STATE.get("last_output_path") or OUTPUT_FILE
+    if target_file and os.path.exists(target_file):
+        try:
+            disk_trips = core.parse_final_schedule_file(target_file)
+            if disk_trips:
+                CURRENT_STATE["all_trips"] = disk_trips
+        except Exception as e:
+            print(f"Используем данные из памяти: {e}")
+
     trips_to_send = CURRENT_STATE.get("all_trips", [])
     if not trips_to_send:
         # Если в памяти нет, пробуем перечитать дефолтный файл

@@ -18,7 +18,7 @@ import re
 import glob
 import json
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from collections import Counter, defaultdict
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -143,6 +143,71 @@ def parse_plan_file(plan_path):
                 
     wb.close()
     return plan_trips, start_date
+
+def parse_final_schedule_file(excel_path):
+    """
+    Считывает готовый график отгрузок (Недельные графики.xlsx), 
+    в который сотрудник мог внести ручные правки в Excel 
+    (добавил/удалил машины, изменил время или перевозчика).
+    """
+    wb = openpyxl.load_workbook(excel_path, data_only=True)
+    all_trips = []
+    
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        # Проверяем, что это дневной лист графика
+        h_c = str(ws['C1'].value or '').strip()
+        h_g = str(ws['G1'].value or '').strip()
+        if 'Дата' not in h_c and 'Направление' not in h_g:
+            continue
+            
+        for row in range(2, ws.max_row + 1):
+            date_val = ws[f'C{row}'].value
+            city_val = ws[f'G{row}'].value
+            carrier_val = ws[f'I{row}'].value
+            
+            if not city_val or str(city_val).strip() == '' or 'Итого' in str(city_val):
+                continue
+            if not date_val:
+                continue
+                
+            day_val = ws[f'D{row}'].value or ''
+            month_val = ws[f'E{row}'].value or ''
+            truck_num = ws[f'F{row}'].value or 1
+            pallets = ws[f'H{row}'].value or 33
+            time_val = ws[f'K{row}'].value
+            
+            if isinstance(date_val, datetime):
+                dt_obj = date_val
+                date_str = dt_obj.strftime('%d.%m.%Y')
+            else:
+                date_str = str(date_val).strip()
+                try:
+                    dt_obj = datetime.strptime(date_str, '%d.%m.%Y')
+                except Exception:
+                    dt_obj = None
+                    
+            if isinstance(time_val, (datetime, time)):
+                time_str = time_val.strftime('%H:%M:%S')
+            else:
+                time_str = str(time_val or '09:00:00').strip()
+                if len(time_str) == 5:
+                    time_str += ':00'
+                    
+            all_trips.append({
+                'date': date_str,
+                'dt': dt_obj,
+                'day': str(day_val).strip(),
+                'month': str(month_val).strip(),
+                'city': str(city_val).strip(),
+                'truck_num': truck_num,
+                'carrier': str(carrier_val or 'ТК Сияние').strip(),
+                'pallets': pallets,
+                'time': time_str
+            })
+            
+    wb.close()
+    return all_trips
 
 def build_schedule_from_plan(plan_trips, start_date, output_path):
     wb_out = openpyxl.Workbook()
