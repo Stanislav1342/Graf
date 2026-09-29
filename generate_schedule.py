@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Автоматизированный генератор графика отгрузок (РЦ Черная Грязь).
+Автоматизированный генератор графика отгрузок (РЦ Черная Грязь)
+и модуль персональной почтовой рассылки через Microsoft Outlook.
 
-Основной входной файл: 'График_отгрузки_филиалов_неделя_2.xlsm' (или любой .xlsm в текущей папке).
-Опциональный входной файл: 'Филиалы...xlsx' (если есть оперативные ручные правки).
-
-Что делает скрипт:
-1. Автоматически находит файл плана (*.xlsm) в текущей директории.
-2. Определяет даты недели из заголовка (например, 28.09-04.10).
-3. Разворачивает матрицу отгрузок по дням недели в линейный реестр.
-4. Выстраивает правильный логистический порядок подачи городов (ближние -> дальние).
-5. Строго соблюдает ограничение: РОВНО 2 МАШИНЫ В ЧАС (09:00 - 2 машины, 10:00 - 2 машины и т.д.).
-6. Назначает проверенных перевозчиков по направлениям.
-7. Подсвечивает 40-паллетные машины мягким зеленым цветом (#E2EFDA).
-8. Создает отдельный лист на каждый день недели (28.09 Пн, 29.09 Вт, ...).
-9. Выводит сводную аналитику долей ТК справа (M:O).
+Ключевые принципы:
+1. Вход: 'График_отгрузки_филиалов_неделя_2.xlsm' (или любой .xlsm в папке).
+2. Выход: Excel с 7 листами по дням недели (28.09 Пн, 29.09 Вт, ...).
+3. Ограничение емкости: строго 2 машины в час.
+4. Конфиденциальность: каждому перевозчику уходит ТОЛЬКО его расписание!
+5. Интеграция с Outlook: прямая отправка без SMTP и паролей (pywin32).
 """
 
 import sys
@@ -54,19 +48,14 @@ MASTER_CITY_ORDER = {
     'Вс': ['Казань', 'Воронеж', 'Краснодар', 'Волгоград', 'Самара', 'Екатеринбург', 'Санкт-Петербург', 'Брянск']
 }
 
-# Стартовый час начала погрузки по дням
 START_HOURS = {
-    'Пн': 9,
-    'Вт': 9,
-    'Ср': 9,
-    'Чт': 9,
-    'Пт': 9,
-    'Сб': 5, # Суббота: ранние утренние окна
+    'Пн': 9, 'Вт': 9, 'Ср': 9, 'Чт': 9, 'Пт': 9,
+    'Сб': 5, # Суббота: ранние окна
     'Вс': 9
 }
 
-# Базовое закрепление проверенных перевозчиков по направлениям
 def get_carrier_for_trip(city, truck_num, day_name):
+    """Закрепление проверенных перевозчиков по направлениям и номерам машин"""
     if city == 'Ярославль':
         if day_name in ['Вт', 'Чт']:
             return 'ИП Мельник' if truck_num == 1 else 'ИП Гусманов'
@@ -102,7 +91,6 @@ def get_carrier_for_trip(city, truck_num, day_name):
     return 'ТК Сияние'
 
 def find_default_plan_file(base_dir):
-    """Ищет файл плана .xlsm в текущей или указанной папке"""
     candidates = [
         os.path.join(base_dir, 'График_отгрузки_филиалов_неделя_2.xlsm'),
         *glob.glob(os.path.join(base_dir, '*График*отгрузки*.xlsm')),
@@ -114,9 +102,7 @@ def find_default_plan_file(base_dir):
     return None
 
 def parse_plan_file(plan_path):
-    """Считывает план отгрузок из .xlsm файла"""
     wb = openpyxl.load_workbook(plan_path, data_only=True)
-    # Ищем лист с планом (обычно первый или с датами)
     sheet_name = wb.sheetnames[0]
     for s in wb.sheetnames:
         if '.' in s and '-' in s:
@@ -125,11 +111,9 @@ def parse_plan_file(plan_path):
     ws = wb[sheet_name]
     
     header_val = str(ws['A1'].value or '')
-    start_date = None
     match = re.search(r'(\d{1,2}\.\d{2})\s*-\s*(\d{1,2}\.\d{2})', header_val)
     if match:
         start_d_str = match.group(1)
-        # Год определяем текущий или 2026
         cur_year = datetime.now().year
         try:
             start_date = datetime.strptime(f"{start_d_str}.{cur_year}", "%d.%m.%Y")
@@ -160,7 +144,6 @@ def parse_plan_file(plan_path):
     return plan_trips, start_date
 
 def build_schedule_from_plan(plan_trips, start_date, output_path):
-    """Формирует итоговый Excel файл на 7 листов по дням строго по 2 машины в час"""
     wb_out = openpyxl.Workbook()
     wb_out.remove(wb_out.active)
     
@@ -201,6 +184,8 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
         'M': 25, 'N': 10, 'O': 10
     }
 
+    all_scheduled_trips = []
+
     for d_name, d_short, offset in DAYS_MAPPING:
         cur_date = start_date + timedelta(days=offset)
         d_str = cur_date.strftime('%d.%m.%Y')
@@ -226,11 +211,9 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             cell.border = border_header
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-        # Собираем список рейсов дня в правильном логистическом порядке
         day_plan = plan_trips.get(d_name, {})
         city_order = MASTER_CITY_ORDER.get(d_name, [])
         
-        # Добавляем города по порядку
         ordered_trips = []
         city_truck_counters = Counter()
         for city in city_order:
@@ -241,6 +224,9 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
                 tr_num = city_truck_counters[city]
                 carrier = get_carrier_for_trip(city, tr_num, d_name)
                 ordered_trips.append({
+                    'date': d_str,
+                    'day': d_short,
+                    'month': d_month,
                     'city': city,
                     'truck_num': tr_num,
                     'carrier': carrier,
@@ -252,8 +238,8 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
         for i, tr in enumerate(ordered_trips):
             slot_h = start_h + (i // 2)
             tr['time'] = f"{slot_h:02d}:00:00"
+            all_scheduled_trips.append(tr)
 
-        # Записываем строки в лист
         row_idx = 2
         for tr in ordered_trips:
             c_a = ws[f'A{row_idx}']
@@ -304,7 +290,7 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             c_i.border = border_thin
             
             c_j = ws[f'J{row_idx}']
-            c_j.value = None # Тариф пустой
+            c_j.value = None
             c_j.border = border_thin
             
             c_k = ws[f'K{row_idx}']
@@ -324,7 +310,6 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
         if last_data_row >= 2:
             ws.auto_filter.ref = f'C1:K{last_data_row}'
 
-        # Сводная таблица ТК справа
         carrier_counts = Counter([t['carrier'] for t in ordered_trips if t.get('carrier')])
         if carrier_counts:
             ws['M3'] = 'Перевозчик'
@@ -373,24 +358,181 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             ws[f'O{s_row}'].border = border_total
 
     wb_out.save(output_path)
-    print(f"Готово! Файл успешно создан: {output_path}")
+    print(f"Таблица успешно создана: {output_path}")
+    return all_scheduled_trips
+
+def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
+    """Генерирует индивидуальное конфиденциальное HTML-письмо для конкретного перевозчика"""
+    rows_html = ""
+    for tr in trips:
+        bg_color = "#e2efda" if tr['pallets'] == 40 else "#ffffff"
+        rows_html += f"""
+        <tr style="background-color: {bg_color}; text-align: center;">
+            <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['date']}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold;">{tr['day']}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold; color: #1f4e79;">{tr['time'][:5]}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; text-align: left; font-weight: bold;">{tr['city']}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9;">№ {tr['truck_num']}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['pallets']} пал.</td>
+        </tr>
+        """
+        
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333333; }}
+            table {{ border-collapse: collapse; width: 100%; max-width: 650px; margin-top: 15px; margin-bottom: 20px; }}
+            th {{ background-color: #2f5597; color: #ffffff; padding: 10px; border: 1px solid #2f5597; text-align: center; }}
+            .notice {{ background-color: #fff2cc; border-left: 4px solid #d6b656; padding: 12px; margin: 15px 0; font-size: 13px; }}
+            .footer {{ font-size: 12px; color: #7f7f7f; margin-top: 25px; border-top: 1px solid #e0e0e0; padding-top: 10px; }}
+        </style>
+    </head>
+    <body>
+        <p>Здравствуйте!</p>
+        <p>Направляем согласованный график погрузки транспортных средств <b>«{carrier_name}»</b> на складе <b>РЦ «Черная Грязь»</b> на период <b>{start_date_str} – {end_date_str}</b>:</p>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Дата</th>
+                    <th>День</th>
+                    <th>Время погрузки</th>
+                    <th>Направление</th>
+                    <th>№ ТС</th>
+                    <th>Паллеты</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+        
+        <div class="notice">
+            <b>Важные условия регламента:</b><br>
+            • Условие погрузки склада: <b>строго 2 машины в час</b>.<br>
+            • Просьба обеспечить своевременное прибытие ТС к назначенному тайм-слоту (без опозданий).<br>
+            • При возникновении задержек в пути оперативно информировать диспетчера РЦ.
+        </div>
+        
+        <p>С уважением,<br>
+        <b>Отдел логистики РЦ «Черная Грязь»</b><br>
+        ФК «ПУЛЬС»</p>
+        
+        <div class="footer">
+            Данное сообщение сформировано автоматически и предназначено исключительно для перевозчика {carrier_name}. Конфиденциально.
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+def send_emails_via_outlook(all_trips, target_email="n.rozhkov@puls.ru", draft_mode=False):
+    """
+    Отправляет индивидуальные письма через установленный Microsoft Outlook.
+    Каждый перевозчик получает ТОЛЬКО свое расписание!
+    В тестовом режиме все письма отправляются на адрес target_email.
+    """
+    try:
+        import win32com.client as win32
+    except ImportError:
+        print("\n[ВНИМАНИЕ] Библиотека 'pywin32' не установлена.")
+        print("Для отправки через Outlook выполните: pip install pywin32")
+        print("\nПоказываем текстовый предпросмотр писем:\n")
+        preview_emails_console(all_trips, target_email)
+        return
+
+    # Группируем рейсы по перевозчикам
+    carrier_trips = defaultdict(list)
+    for tr in all_trips:
+        car = tr['carrier']
+        carrier_trips[car].append(tr)
+
+    dates = [tr['date'] for tr in all_trips]
+    start_d = dates[0] if dates else ''
+    end_d = dates[-1] if dates else ''
+
+    print("\n" + "="*70)
+    print(f"ПОДКЛЮЧЕНИЕ К OUTLOOK: Подготовка {len(carrier_trips)} писем (получатель: {target_email})")
+    print("="*70)
+
+    try:
+        outlook = win32.Dispatch('outlook.application')
+    except Exception as e:
+        print(f"Ошибка подключения к приложению Outlook: {e}")
+        print("Убедитесь, что Microsoft Outlook запущен на компьютере.")
+        return
+
+    sent_count = 0
+    for carrier, c_trips in sorted(carrier_trips.items()):
+        # Сортируем рейсы перевозчика по хронологии
+        sorted_trips = sorted(c_trips, key=lambda x: (x['date'], x['time']))
+        
+        mail = outlook.CreateItem(0) # 0 = olMailItem
+        mail.To = target_email
+        mail.Subject = f"[{carrier}] График погрузки РЦ Черная Грязь ({start_d} - {end_d})"
+        mail.HTMLBody = generate_carrier_html(carrier, sorted_trips, start_d, end_d)
+        
+        if draft_mode:
+            mail.Save() # Сохранить в папку "Черновики" Outlook
+            print(f"  [ЧЕРНОВИК СОХРАНЕН] -> {carrier:25s} ({len(sorted_trips)} рейсов)")
+        else:
+            mail.Send() # Отправить
+            print(f"  [ОТПРАВЛЕНО В OUTLOOK] -> {carrier:25s} ({len(sorted_trips)} рейсов)")
+            
+        sent_count += 1
+
+    mode_text = "сохранены в Черновиках" if draft_mode else "успешно отправлены"
+    print("="*70)
+    print(f"ИТОГО: {sent_count} индивидуальных писем {mode_text} через Outlook на адрес {target_email}!")
+    print("Каждое письмо содержит ТОЛЬКО рейсы соответствующего перевозчика.")
+
+def preview_emails_console(all_trips, target_email):
+    carrier_trips = defaultdict(list)
+    for tr in all_trips:
+        carrier_trips[tr['carrier']].append(tr)
+
+    dates = [tr['date'] for tr in all_trips]
+    start_d = dates[0] if dates else ''
+    end_d = dates[-1] if dates else ''
+
+    for carrier, c_trips in sorted(carrier_trips.items()):
+        print(f"\n[ТЕМА]: [{carrier}] График погрузки РЦ Черная Грязь ({start_d} - {end_d})")
+        print(f"[КОМУ]: {target_email} (в боевом режиме: диспетчер {carrier})")
+        print(f"Рейсы перевозчика ({len(c_trips)} шт.):")
+        for tr in c_trips:
+            print(f"  • {tr['date']} ({tr['day']}) в {tr['time'][:5]} -> {tr['city']:15s} (ТС #{tr['truck_num']}, {tr['pallets']} пал.)")
 
 if __name__ == '__main__':
     base_dir = os.path.dirname(os.path.abspath(__file__))
     default_plan = find_default_plan_file(base_dir)
     default_out = os.path.join(base_dir, 'Недельные графики (готовый).xlsx')
     
-    parser = argparse.ArgumentParser(description='Генератор графика отгрузок из файла плана .xlsm')
+    parser = argparse.ArgumentParser(description='Генератор графика отгрузок из плана .xlsm и отправка в Outlook')
     parser.add_argument('--plan', default=default_plan, help='Путь к файлу График_отгрузки_филиалов_неделя_2.xlsm')
     parser.add_argument('--out', default=default_out, help='Путь к результирующему файлу Excel')
+    parser.add_argument('--send-outlook', action='store_true', help='Отправить индивидуальные письма через Outlook')
+    parser.add_argument('--draft', action='store_true', help='Сохранить письма в черновики Outlook вместо отправки')
+    parser.add_argument('--email', default='n.rozhkov@puls.ru', help='Тестовый адрес получателя писем')
     
     args = parser.parse_args()
     
     if not args.plan or not os.path.exists(args.plan):
-        print(f"ОШИБКА: Файл плана отгрузок не найден в папке {base_dir}!")
-        print("Пожалуйста, убедитесь, что файл 'График_отгрузки_филиалов_неделя_2.xlsm' лежит в папке проекта.")
+        print(f"ОШИБКА: Файл плана отгрузок (*.xlsm) не найден в папке {base_dir}!")
         sys.exit(1)
         
-    print(f"Обработка плана: {args.plan}")
+    print(f"Обработка плана отгрузок: {args.plan}")
     plan_trips, start_date = parse_plan_file(args.plan)
-    build_schedule_from_plan(plan_trips, start_date, args.out)
+    all_trips = build_schedule_from_plan(plan_trips, start_date, args.out)
+    
+    # Если указан флаг отправки
+    if args.send_outlook or args.draft:
+        send_emails_via_outlook(all_trips, target_email=args.email, draft_mode=args.draft)
+    else:
+        print("\n[ПОДСКАЗКА]:")
+        print(f"1. Чтобы сохранить черновики в Outlook для проверки:")
+        print(f"   python generate_schedule.py --draft")
+        print(f"2. Чтобы сразу отправить письма на {args.email}:")
+        print(f"   python generate_schedule.py --send-outlook")
