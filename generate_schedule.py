@@ -97,7 +97,10 @@ def load_tariffs_matrix(base_dir=None):
         'Агро-Авто': 'Агро-Авто',
         'Веб-Логистика': 'Веб-Логистика',
         'Буш-Авто': 'Буш-Авто',
-        'Азимут': 'Азимут'
+        'Азимут': 'Азимут',
+        'ИП Коршунов': 'ИП Коршунов',
+        'ИП Мельник': 'ИП Мельник',
+        'ИП Гусманов': 'ИП Гусманов'
     }
     
     city_norm = {
@@ -147,7 +150,7 @@ def load_tariffs_matrix(base_dir=None):
     if not tariffs:
         tariffs = {
             'Брянск': {'НОРДЛАЙН': 51000, 'ЕманТрансАвто': 51500, 'Олимп': 51500, 'ТК Сияние': 52500, 'Агро-Авто': 73000},
-            'Ярославль': {'Буш-Авто': 48800, 'ТК Сияние': 52500, 'ЕманТрансАвто': 56500, 'Олимп': 56500, 'Караван': 65000, 'Агро-Авто': 77000},
+            'Ярославль': {'ИП Гусманов': 47000, 'Буш-Авто': 48800, 'ИП Коршунов': 52000, 'ИП Мельник': 52000, 'ТК Сияние': 52500, 'ЕманТрансАвто': 56500, 'Олимп': 56500, 'Караван': 65000, 'Агро-Авто': 77000},
             'Воронеж': {'Буш-Авто': 57950, 'ТК Сияние': 65000, 'ЕманТрансАвто': 65000, 'Олимп': 65000, 'Караван': 70000, 'Агро-Авто': 85000},
             'Санкт-Петербург': {'НОРДЛАЙН': 86700, 'Караван': 94000, 'Буш-Авто': 96583, 'ЕманТрансАвто': 97000, 'Олимп': 97000, 'ТК Сияние': 97650, 'Агро-Авто': 133000, 'АО Национальный': 135000},
             'Казань': {'Буш-Авто': 116917, 'НОРДЛАЙН': 118320, 'Караван': 128000, 'ЕманТрансАвто': 133800, 'Олимп': 133800, 'ТК Сияние': 136500, 'АО Национальный': 143000, 'Азимут': 150000, 'Агро-Авто': 157000, 'Веб-Логистика': 160000},
@@ -166,17 +169,22 @@ def load_tariffs_matrix(base_dir=None):
 def plan_weekly_carrier_assignments(plan_trips, tariffs):
     """
     Распределяет перевозчиков и тарифы по рейсам согласно правилам:
-    1. Хабаровск: исключительно ТК Азимут (100% рейсов).
-    2. Иркутск: 1 рейс ТК Азимут.
-    3. Примум: строго 2 машины на неделю (в Сибири: Иркутск, Новосибирск).
-    4. Олимп: привлекать ТОЛЬКО на Урал и Сибирь (Екатеринбург, Новосибирск, Красноярск, Иркутск).
-    5. ЕманТрансАвто: привлекать ТОЛЬКО на Урал и Сибирь (Екатеринбург, Новосибирск, Красноярск, Иркутск).
-    6. НОРДЛАЙН: привлекать только на Брянск и Казань (ровно 2 рейса в неделю), на Екатеринбург и остальные НЕ привлекать.
-    7. Буш-Авто: строгое ограничение максимум 5 машин на неделю.
-    8. ТК Сияние: ровно 40% рейсов за исключением направлений Сибирь и Дальний Восток.
-    9. Агро-Авто: распределить около 10 рейсов за исключением направлений Сибирь и Дальний Восток.
-    10. АО Национальный: распределить около 10 рейсов за исключением направлений Сибирь и Дальний Восток.
-    11. Все остальные рейсы закрываются самыми выгодными доступными перевозчиками (Караван, Веб-Логистика, Виллайн).
+    1. Ярославль: распределяется на трех перевозчиков:
+       - 1-я машина всегда за ИП Коршунов / ИП Мельник (чередуя: день 1 — Коршунов, день 2 — Мельник).
+       - 2-я машина всегда за перевозчиком ИП Гусманов.
+    2. ТК Сияние:
+       - Имеет как минимум по одной машине на каждое направление за исключением Сибири, Дальнего Востока и Ярославля.
+       - Всего распределяется ~40% рейсов.
+    3. Хабаровск: исключительно ТК Азимут (100% рейсов).
+    4. Иркутск: 1 рейс ТК Азимут.
+    5. Примум: строго 2 машины на неделю (в Сибири: Иркутск, Новосибирск).
+    6. Олимп: привлекать ТОЛЬКО на Урал и Сибирь (Екатеринбург, Новосибирск, Красноярск, Иркутск).
+    7. ЕманТрансАвто: привлекать ТОЛЬКО на Урал и Сибирь (Екатеринбург, Новосибирск, Красноярск, Иркутск).
+    8. НОРДЛАЙН: привлекать только на Брянск и Казань (ровно 2 рейса в неделю), на Екатеринбург и остальные НЕ привлекать.
+    9. Буш-Авто: строгое ограничение максимум 5 машин на неделю.
+    10. Агро-Авто: распределить около 10 рейсов за исключением направлений Сибирь и Дальний Восток.
+    11. АО Национальный: распределить около 10 рейсов за исключением направлений Сибирь и Дальний Восток.
+    12. Все остальные рейсы закрываются самыми выгодными доступными перевозчиками (Караван, Веб-Логистика, Виллайн).
     """
     SIBERIA_FE = {'Новосибирск', 'Красноярск', 'Иркутск', 'Хабаровск'}
     URAL_SIBERIA = {'Екатеринбург', 'Новосибирск', 'Красноярск', 'Иркутск', 'Хабаровск'}
@@ -205,14 +213,27 @@ def plan_weekly_carrier_assignments(plan_trips, tariffs):
         assigned[key] = (carrier, tar)
         carrier_counts[carrier] += 1
 
-    # --- СИБИРЬ И ДАЛЬНИЙ ВОСТОК (15 рейсов) ---
+    # --- 1. ЯРОСЛАВЛЬ (Правило: Коршунов/Мельник день 1 день 2 на авто 1, Гусманов на авто 2) ---
+    yar_days_seen = 0
+    for d_name, d_short, offset in DAYS_MAPPING:
+        yar_trips = [t for t in all_trips if t['day'] == d_name and t['city'] == 'Ярославль']
+        if yar_trips:
+            first_car = 'ИП Коршунов' if (yar_days_seen % 2 == 0) else 'ИП Мельник'
+            yar_days_seen += 1
+            for t in yar_trips:
+                if t['truck_num'] == 1:
+                    assign_trip(t, first_car)
+                elif t['truck_num'] >= 2:
+                    assign_trip(t, 'ИП Гусманов')
 
-    # 1. Хабаровск: 100% рейсов -> ТК Азимут (4 рейса)
+    # --- 2. СИБИРЬ И ДАЛЬНИЙ ВОСТОК (15 рейсов) ---
+
+    # Хабаровск: 100% рейсов -> ТК Азимут (4 рейса)
     for t in all_trips:
         if t['city'] == 'Хабаровск':
             assign_trip(t, 'Азимут')
 
-    # 2. Иркутск: 1 рейс ТК Азимут, 1 рейс Примум, 1 рейс ЕманТрансАвто (всего 3 рейса)
+    # Иркутск: 1 рейс ТК Азимут, 1 рейс Примум, 1 рейс ЕманТрансАвто (всего 3 рейса)
     irkutsk_trips = [t for t in all_trips if t['city'] == 'Иркутск']
     if len(irkutsk_trips) >= 1:
         assign_trip(irkutsk_trips[0], 'Азимут')
@@ -221,9 +242,7 @@ def plan_weekly_carrier_assignments(plan_trips, tariffs):
     if len(irkutsk_trips) >= 3:
         assign_trip(irkutsk_trips[2], 'ЕманТрансАвто')
 
-    # 3. Новосибирск (5 рейсов):
-    # Примум: 1 рейс (итого у Примум ровно 2 машины на неделю: Иркутск + Новосибирск)
-    # Остальные 4 рейса: Олимп (2), ЕманТрансАвто (1), Виллайн (1)
+    # Новосибирск (5 рейсов): Примум 1, Олимп 2, ЕманТрансАвто 1, Виллайн 1
     nsk_trips = [t for t in all_trips if t['city'] == 'Новосибирск']
     if nsk_trips and carrier_counts['Примум'] < 2:
         assign_trip(nsk_trips[0], 'Примум')
@@ -233,18 +252,26 @@ def plan_weekly_carrier_assignments(plan_trips, tariffs):
     for idx, t in enumerate(nsk_rem):
         assign_trip(t, nsk_cars[idx % len(nsk_cars)])
 
-    # 4. Красноярск (3 рейса):
-    # Виллайн (1 - тариф 530к), ЕманТрансАвто (1 - 547к), Олимп (1 - 547к)
+    # Красноярск (3 рейса): Виллайн 1, ЕманТрансАвто 1, Олимп 1
     kras_trips = [t for t in all_trips if t['city'] == 'Красноярск']
     kras_cars = ['Виллайн', 'ЕманТрансАвто', 'Олимп']
     for idx, t in enumerate(kras_trips):
         assign_trip(t, kras_cars[idx % len(kras_cars)])
 
-    # --- ЕВРОПЕЙСКАЯ ЧАСТЬ И УРАЛ (69 рейсов) ---
+    # --- 3. ЕВРОПЕЙСКАЯ ЧАСТЬ И УРАЛ (без Сибири, ДВ и Ярославля) ---
     non_sib_fe = [t for t in all_trips if t['city'] not in SIBERIA_FE]
-    target_siyanie = round(len(non_sib_fe) * 0.40)  # 28 рейсов
+    target_siyanie = round(len(non_sib_fe) * 0.40)  # ~40% (25-28 рейсов)
 
-    # 5. НОРДЛАЙН: строго Казань 2 рейса, Брянск 2 рейса, Екатеринбург не привлекать
+    # Правило: У Сияния должно быть как минимум по одной машине на каждое направление
+    # за исключением Сибири, Дальнего Востока и Ярославля
+    siyanie_mandatory_cities = ['Брянск', 'Воронеж', 'Санкт-Петербург', 'Казань', 'Волгоград', 'Краснодар', 'Самара', 'Екатеринбург']
+    for city in siyanie_mandatory_cities:
+        c_trips = [t for t in all_trips if t['city'] == city and (t['day'], t['city'], t['truck_num']) not in assigned]
+        if c_trips:
+            tr_to_assign = next((t for t in c_trips if t['truck_num'] == 2), c_trips[0])
+            assign_trip(tr_to_assign, 'ТК Сияние')
+
+    # 4. НОРДЛАЙН: строго Казань 2 рейса, Брянск 2 рейса, Екатеринбург не привлекать
     kazan_trips = [t for t in all_trips if t['city'] == 'Казань']
     nord_kazan = 0
     for t in kazan_trips:
@@ -259,25 +286,18 @@ def plan_weekly_carrier_assignments(plan_trips, tariffs):
             assign_trip(t, 'НОРДЛАЙН')
             nord_bryansk += 1
 
-    # 6. Буш-Авто: ограничение максимум 5 машин на неделю
-    # Самые выгодные тарифы у Буш-Авто: Ярославль (48 800) и Воронеж (57 950)
-    bush_allocated = 0
-    for t in all_trips:
-        if bush_allocated >= 5:
-            break
-        key = (t['day'], t['city'], t['truck_num'])
-        if key in assigned:
-            continue
-        if t['city'] == 'Ярославль' and bush_allocated < 3:
-            assign_trip(t, 'Буш-Авто')
-            bush_allocated += 1
-        elif t['city'] == 'Воронеж' and bush_allocated < 5:
-            assign_trip(t, 'Буш-Авто')
-            bush_allocated += 1
+    # 5. Буш-Авто: ограничение максимум 5 машин на неделю
+    # Так как Ярославль закрыт Коршуновым/Мельником/Гусмановым, Буш-Авто привлекается на самые экономичные из оставшихся:
+    # Воронеж (тариф 57 950), Казань (116 917), Краснодар (177 917)
+    bush_quotas = {'Воронеж': 2, 'Казань': 1, 'Краснодар': 2}
+    for city, q in bush_quotas.items():
+        c_trips = [t for t in all_trips if t['city'] == city and (t['day'], t['city'], t['truck_num']) not in assigned]
+        for t in c_trips[:q]:
+            if carrier_counts['Буш-Авто'] < 5:
+                assign_trip(t, 'Буш-Авто')
 
-    # 7. Олимп и ЕманТрансАвто на Екатеринбурге (Урал):
+    # 6. Олимп и ЕманТрансАвто на Екатеринбурге (Урал):
     # Олимп привлекать ТОЛЬКО на Урал и Сибирь!
-    # На Екатеринбург Олимп берет 4 рейса (тариф 247к - самый выгодный из разрешенных), ЕманТрансАвто берет 2 рейса
     ekb_trips = [t for t in all_trips if t['city'] == 'Екатеринбург' and (t['day'], t['city'], t['truck_num']) not in assigned]
     olimp_ekb = 0
     eman_ekb = 0
@@ -289,16 +309,13 @@ def plan_weekly_carrier_assignments(plan_trips, tariffs):
             assign_trip(t, 'ЕманТрансАвто')
             eman_ekb += 1
 
-    # 8. Караван на Санкт-Петербург: 3 рейса (тариф 94к)
+    # 7. Караван на Санкт-Петербург: 2 рейса (тариф 94к)
     spb_trips = [t for t in all_trips if t['city'] == 'Санкт-Петербург' and (t['day'], t['city'], t['truck_num']) not in assigned]
-    karavan_cnt = 0
-    for t in spb_trips:
-        if karavan_cnt < 3:
-            assign_trip(t, 'Караван')
-            karavan_cnt += 1
+    for t in spb_trips[:2]:
+        assign_trip(t, 'Караван')
 
-    # 9. АО Национальный: распределить ровно 10 рейсов за исключением Сибири и ДВ
-    # Города, где у Наткара есть тарифы: Краснодар (201.6к), Самара (166к), Волгоград (155к), Казань (143к), Екатеринбург (261.4к), СПБ (135к)
+    # 8. АО Национальный: распределить ровно 10 рейсов за исключением Сибири и ДВ
+    # Города с подтвержденными тарифами: Краснодар (201.6к), Самара (166к), Волгоград (155к), Казань (143к), Екатеринбург (261.4к)
     nat_target = 10
     nat_city_quotas = {'Краснодар': 4, 'Самара': 2, 'Волгоград': 2, 'Казань': 1, 'Екатеринбург': 1}
     for city, quota in nat_city_quotas.items():
@@ -309,10 +326,9 @@ def plan_weekly_carrier_assignments(plan_trips, tariffs):
                 assign_trip(t, 'АО Национальный')
                 c_allocated += 1
 
-    # 10. Агро-Авто: распределить ровно 10 рейсов за исключением Сибири и ДВ
-    # Города: Брянск (2), Воронеж (2), Ярославль (2), Казань (1), Самара (1), Волгоград (1), СПБ (1)
+    # 9. Агро-Авто: распределить ровно 10 рейсов за исключением Сибири и ДВ
     agro_target = 10
-    agro_city_quotas = {'Брянск': 2, 'Воронеж': 2, 'Ярославль': 2, 'Казань': 1, 'Самара': 1, 'Волгоград': 1, 'Санкт-Петербург': 1}
+    agro_city_quotas = {'Брянск': 1, 'Воронеж': 2, 'Казань': 1, 'Самара': 2, 'Волгоград': 1, 'Санкт-Петербург': 2, 'Краснодар': 1}
     for city, quota in agro_city_quotas.items():
         c_trips = [t for t in all_trips if t['city'] == city and (t['day'], t['city'], t['truck_num']) not in assigned]
         c_allocated = 0
@@ -321,19 +337,10 @@ def plan_weekly_carrier_assignments(plan_trips, tariffs):
                 assign_trip(t, 'Агро-Авто')
                 c_allocated += 1
 
-    # 11. Веб-Логистика: 3 рейса на Краснодар (тариф 195к)
-    krasnodar_remaining = [t for t in all_trips if t['city'] == 'Краснодар' and (t['day'], t['city'], t['truck_num']) not in assigned]
-    web_cnt = 0
-    for t in krasnodar_remaining:
-        if web_cnt < 3:
-            assign_trip(t, 'Веб-Логистика')
-            web_cnt += 1
-
-    # 12. ТК Сияние: забирает ровно оставшиеся 28 рейсов (ровно 40% от 69)
-    # Краснодар, Екатеринбург, Ярославль, Воронеж, СПБ, Самара, Казань, Волгоград
+    # 10. ТК Сияние: добирает рейсы на направлениях за исключением Сибири, ДВ и Ярославля
     rem_trips = [t for t in all_trips if (t['day'], t['city'], t['truck_num']) not in assigned]
     for t in rem_trips:
-        if carrier_counts['ТК Сияние'] < target_siyanie:
+        if carrier_counts['ТК Сияние'] < target_siyanie and t['city'] not in SIBERIA_FE and t['city'] != 'Ярославль':
             assign_trip(t, 'ТК Сияние')
         else:
             fallback = 'Веб-Логистика' if t['city'] in ['Краснодар', 'Екатеринбург'] else 'Караван'
@@ -715,8 +722,6 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
     rows_html = ""
     for tr in trips:
         bg_color = "#e2efda" if tr['pallets'] == 40 else "#ffffff"
-        tariff_val = tr.get('tariff', 0)
-        tariff_str = f"{tariff_val:,}".replace(",", " ") + " ₽" if tariff_val else "-"
         rows_html += f"""
         <tr style="background-color: {bg_color}; text-align: center;">
             <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['date']}</td>
@@ -725,7 +730,6 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
             <td style="padding: 8px; border: 1px solid #d9d9d9; text-align: left; font-weight: bold;">{tr['city']}</td>
             <td style="padding: 8px; border: 1px solid #d9d9d9;">№ {tr['truck_num']}</td>
             <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['pallets']} пал.</td>
-            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold; text-align: right;">{tariff_str}</td>
         </tr>
         """
         
@@ -736,7 +740,7 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
         <meta charset="utf-8">
         <style>
             body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333333; }}
-            table {{ border-collapse: collapse; width: 100%; max-width: 720px; margin-top: 15px; margin-bottom: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; max-width: 650px; margin-top: 15px; margin-bottom: 20px; }}
             th {{ background-color: #2f5597; color: #ffffff; padding: 10px; border: 1px solid #2f5597; text-align: center; }}
             .notice {{ background-color: #fff2cc; border-left: 4px solid #d6b656; padding: 12px; margin: 15px 0; font-size: 13px; }}
             .footer {{ font-size: 12px; color: #7f7f7f; margin-top: 25px; border-top: 1px solid #e0e0e0; padding-top: 10px; }}
@@ -755,7 +759,6 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
                     <th>Направление</th>
                     <th>№ ТС</th>
                     <th>Паллеты</th>
-                    <th>Тариф</th>
                 </tr>
             </thead>
             <tbody>
