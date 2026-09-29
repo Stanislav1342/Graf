@@ -234,6 +234,10 @@ def index_page():
           <div class="stat-label">Перевозчиков</div>
           <div class="stat-value" id="statCarriers">-</div>
         </div>
+        <div class="stat-box">
+          <div class="stat-label">Бюджет недели</div>
+          <div class="stat-value" id="statCost" style="color: #15803d;">-</div>
+        </div>
       </div>
 
       <!-- Блок информации о файле на рабочем столе и кнопка Обновить из Excel -->
@@ -404,6 +408,7 @@ def index_page():
           document.getElementById('statWeek').innerText = data.week_range;
           document.getElementById('statTotal').innerText = data.total_trips + ' машин';
           document.getElementById('statCarriers').innerText = data.carriers.length;
+          document.getElementById('statCost').innerText = data.total_cost || '-';
           document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
 
           availableCarriers = data.carriers;
@@ -413,8 +418,9 @@ def index_page():
           select.innerHTML = '';
 
           data.carriers.forEach(c => {
-            container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count}</span></div>`;
-            select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов)</option>`;
+            const costStr = c.cost_str ? ` • ${c.cost_str}` : '';
+            container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count} рейсов${costStr}</span></div>`;
+            select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов${costStr})</option>`;
           });
 
           document.getElementById('resultCard').style.display = 'block';
@@ -507,6 +513,7 @@ def index_page():
           document.getElementById('statWeek').innerText = data.week_range;
           document.getElementById('statTotal').innerText = data.total_trips + ' машин';
           document.getElementById('statCarriers').innerText = data.carriers.length;
+          document.getElementById('statCost').innerText = data.total_cost || '-';
           document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
 
           availableCarriers = data.carriers;
@@ -516,8 +523,9 @@ def index_page():
           select.innerHTML = '';
 
           data.carriers.forEach(c => {
-            container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count}</span></div>`;
-            select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов)</option>`;
+            const costStr = c.cost_str ? ` • ${c.cost_str}` : '';
+            container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count} рейсов${costStr}</span></div>`;
+            select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов${costStr})</option>`;
           });
 
           document.getElementById('resultCard').style.display = 'block';
@@ -660,11 +668,30 @@ async def upload_file(file: UploadFile = File(...)):
         dates = [t['date'] for t in all_trips]
         week_range = f"{dates[0]} - {dates[-1]}" if dates else ""
         
-        carriers_list = [{"name": k, "count": v} for k, v in carrier_counts.most_common()]
+        total_cost = sum(t.get('tariff', 0) for t in all_trips)
+        total_cost_str = f"{total_cost:,}".replace(",", " ") + " ₽"
+        
+        carrier_costs = defaultdict(int)
+        for t in all_trips:
+            car = t.get('carrier')
+            if car:
+                carrier_costs[car] += t.get('tariff', 0)
+                
+        carriers_list = [
+            {
+                "name": k,
+                "count": v,
+                "cost": carrier_costs[k],
+                "cost_str": f"{carrier_costs[k]:,}".replace(",", " ") + " ₽"
+            }
+            for k, v in carrier_counts.most_common()
+        ]
         
         CURRENT_STATE["all_trips"] = all_trips
         CURRENT_STATE["week_range"] = week_range
         CURRENT_STATE["total_trips"] = len(all_trips)
+        CURRENT_STATE["total_cost"] = total_cost
+        CURRENT_STATE["total_cost_str"] = total_cost_str
         CURRENT_STATE["carriers"] = carriers_list
         CURRENT_STATE["last_output_path"] = target_path
         CURRENT_STATE["last_output_filename"] = out_filename
@@ -673,6 +700,7 @@ async def upload_file(file: UploadFile = File(...)):
             "status": "success",
             "week_range": week_range,
             "total_trips": len(all_trips),
+            "total_cost": total_cost_str,
             "carriers": carriers_list,
             "filename": out_filename,
             "is_edited": is_edited_schedule
@@ -738,11 +766,31 @@ def select_file(req: SelectFileRequest):
         carrier_counts = Counter([t['carrier'] for t in trips if t.get('carrier')])
         dates = [t['date'] for t in trips]
         week_range = f"{dates[0]} - {dates[-1]}" if dates else ""
-        carriers_list = [{"name": k, "count": v} for k, v in carrier_counts.most_common()]
+        
+        total_cost = sum(t.get('tariff', 0) for t in trips)
+        total_cost_str = f"{total_cost:,}".replace(",", " ") + " ₽"
+        
+        carrier_costs = defaultdict(int)
+        for t in trips:
+            car = t.get('carrier')
+            if car:
+                carrier_costs[car] += t.get('tariff', 0)
+                
+        carriers_list = [
+            {
+                "name": k,
+                "count": v,
+                "cost": carrier_costs[k],
+                "cost_str": f"{carrier_costs[k]:,}".replace(",", " ") + " ₽"
+            }
+            for k, v in carrier_counts.most_common()
+        ]
         
         CURRENT_STATE["all_trips"] = trips
         CURRENT_STATE["week_range"] = week_range
         CURRENT_STATE["total_trips"] = len(trips)
+        CURRENT_STATE["total_cost"] = total_cost
+        CURRENT_STATE["total_cost_str"] = total_cost_str
         CURRENT_STATE["carriers"] = carriers_list
         CURRENT_STATE["last_output_path"] = target_path
         CURRENT_STATE["last_output_filename"] = req.filename
@@ -752,6 +800,7 @@ def select_file(req: SelectFileRequest):
             "filename": req.filename,
             "week_range": week_range,
             "total_trips": len(trips),
+            "total_cost": total_cost_str,
             "carriers": carriers_list
         }
     except Exception as e:

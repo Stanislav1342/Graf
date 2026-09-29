@@ -55,41 +55,243 @@ START_HOURS = {
     'Вс': 9
 }
 
-def get_carrier_for_trip(city, truck_num, day_name):
-    """Закрепление проверенных перевозчиков по направлениям и номерам машин"""
-    if city == 'Ярославль':
-        if day_name in ['Вт', 'Чт']:
-            return 'ИП Мельник' if truck_num == 1 else 'ИП Гусманов'
+def find_tariffs_file(base_dir=None):
+    """Ищет файл ТАРИФЫ РК ТАБЛИЦА.xlsx в проекте, Загрузках или на Рабочем столе"""
+    candidates = []
+    if base_dir:
+        candidates.append(os.path.join(base_dir, 'ТАРИФЫ РК ТАБЛИЦА.xlsx'))
+    user_home = os.path.expanduser('~')
+    candidates.extend([
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ТАРИФЫ РК ТАБЛИЦА.xlsx'),
+        os.path.join(user_home, 'Downloads', 'ТАРИФЫ РК ТАБЛИЦА.xlsx'),
+        os.path.join(user_home, 'Загрузки', 'ТАРИФЫ РК ТАБЛИЦА.xlsx'),
+        os.path.join(user_home, 'Desktop', 'ТАРИФЫ РК ТАБЛИЦА.xlsx'),
+        os.path.join(user_home, 'Рабочий стол', 'ТАРИФЫ РК ТАБЛИЦА.xlsx'),
+        os.path.join(user_home, 'OneDrive', 'Desktop', 'ТАРИФЫ РК ТАБЛИЦА.xlsx'),
+        os.path.join(user_home, 'OneDrive', 'Рабочий стол', 'ТАРИФЫ РК ТАБЛИЦА.xlsx'),
+    ])
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+def load_tariffs_matrix(base_dir=None):
+    """
+    Загружает актуальную матрицу тарифов из листа 'Актуальные ' файла 'ТАРИФЫ РК ТАБЛИЦА.xlsx'.
+    Возвращает словарь: {город: {перевозчик: тариф}}
+    """
+    tariff_file = find_tariffs_file(base_dir)
+    tariffs = {}
+    
+    carriers_norm = {
+        'Сияние': 'ТК Сияние',
+        'Наткар': 'АО Национальный',
+        'АЗИМУТ': 'Азимут',
+        'Примум': 'Примум',
+        'Буш': 'Буш-Авто',
+        'Норд Лайн': 'НОРДЛАЙН',
+        'Караван': 'Караван',
+        'Виллайн': 'Виллайн',
+        'ЕманТрансАвто': 'ЕманТрансАвто',
+        'Олимп': 'Олимп',
+        'Агро-Авто': 'Агро-Авто',
+        'Веб-Логистика': 'Веб-Логистика',
+        'Буш-Авто': 'Буш-Авто',
+        'Азимут': 'Азимут'
+    }
+    
+    city_norm = {
+        'СПБ': 'Санкт-Петербург',
+        'Санкт-Петербург': 'Санкт-Петербург',
+        'Брянск': 'Брянск',
+        'Ярославль': 'Ярославль',
+        'Воронеж': 'Воронеж',
+        'Казань': 'Казань',
+        'Волгоград': 'Волгоград',
+        'Краснодар': 'Краснодар',
+        'Самара': 'Самара',
+        'Екатеринбург': 'Екатеринбург',
+        'Новосибирск': 'Новосибирск',
+        'Красноярск': 'Красноярск',
+        'Иркутск': 'Иркутск',
+        'Хабаровск': 'Хабаровск',
+        'Уфа': 'Уфа',
+        'УФА': 'Уфа'
+    }
+    
+    if tariff_file and os.path.exists(tariff_file):
+        try:
+            wb = openpyxl.load_workbook(tariff_file, data_only=True)
+            ws = wb['Актуальные '] if 'Актуальные ' in wb.sheetnames else wb.active
+            for r in range(5, ws.max_row + 1):
+                c_raw = ws.cell(r, 1).value
+                if not c_raw or '-экспресс' in str(c_raw):
+                    continue
+                c_clean = str(c_raw).strip()
+                c = city_norm.get(c_clean, c_clean)
+                if c not in tariffs:
+                    tariffs[c] = {}
+                    
+                for col in range(2, ws.max_column + 1):
+                    car_raw = ws.cell(3, col).value
+                    val = ws.cell(r, col).value
+                    if car_raw in carriers_norm and isinstance(val, (int, float)) and val > 0:
+                        car = carriers_norm[car_raw]
+                        if car not in tariffs[c] or val < tariffs[c][car]:
+                            tariffs[c][car] = int(val)
+            wb.close()
+        except Exception as e:
+            print(f"Ошибка загрузки тарифов из {tariff_file}: {e}")
+            
+    # Резервная встроенная сетка тарифов (если файл отсутствует)
+    if not tariffs:
+        tariffs = {
+            'Брянск': {'НОРДЛАЙН': 51000, 'ЕманТрансАвто': 51500, 'Олимп': 51500, 'ТК Сияние': 52500, 'Агро-Авто': 73000},
+            'Ярославль': {'Буш-Авто': 48800, 'ТК Сияние': 52500, 'ЕманТрансАвто': 56500, 'Олимп': 56500, 'Караван': 65000, 'Агро-Авто': 77000},
+            'Воронеж': {'Буш-Авто': 57950, 'ТК Сияние': 65000, 'ЕманТрансАвто': 65000, 'Олимп': 65000, 'Караван': 70000, 'Агро-Авто': 85000},
+            'Санкт-Петербург': {'НОРДЛАЙН': 86700, 'Караван': 94000, 'Буш-Авто': 96583, 'ЕманТрансАвто': 97000, 'Олимп': 97000, 'ТК Сияние': 97650, 'Агро-Авто': 133000, 'АО Национальный': 135000},
+            'Казань': {'Буш-Авто': 116917, 'НОРДЛАЙН': 118320, 'Караван': 128000, 'ЕманТрансАвто': 133800, 'Олимп': 133800, 'ТК Сияние': 136500, 'АО Национальный': 143000, 'Азимут': 150000, 'Агро-Авто': 157000, 'Веб-Логистика': 160000},
+            'Волгоград': {'ЕманТрансАвто': 134000, 'Олимп': 134000, 'ТК Сияние': 136500, 'АО Национальный': 155000, 'Агро-Авто': 157000},
+            'Краснодар': {'Караван': 175000, 'Буш-Авто': 177917, 'ЕманТрансАвто': 180000, 'Олимп': 180000, 'ТК Сияние': 189000, 'Веб-Логистика': 195000, 'АО Национальный': 201600, 'Азимут': 265000, 'Агро-Авто': 287000},
+            'Самара': {'ЕманТрансАвто': 134200, 'Олимп': 134200, 'ТК Сияние': 137550, 'Азимут': 150000, 'Агро-Авто': 162000, 'АО Национальный': 166000},
+            'Екатеринбург': {'НОРДЛАЙН': 245000, 'Олимп': 247000, 'Веб-Логистика': 250000, 'ТК Сияние': 252000, 'Азимут': 260000, 'АО Национальный': 261450, 'Буш-Авто': 274500, 'ЕманТрансАвто': 280000, 'Агро-Авто': 290000, 'Примум': 300000},
+            'Новосибирск': {'Примум': 360000, 'ЕманТрансАвто': 433000, 'Олимп': 433000, 'Виллайн': 450000, 'Веб-Логистика': 450000, 'ТК Сияние': 451500, 'Агро-Авто': 455000, 'Азимут': 457000, 'АО Национальный': 495000},
+            'Хабаровск': {'Примум': 800000, 'Азимут': 940000, 'ЕманТрансАвто': 972000, 'Олимп': 972000, 'Агро-Авто': 997000, 'ТК Сияние': 997500, 'Виллайн': 1050000},
+            'Красноярск': {'Примум': 420000, 'Виллайн': 530000, 'ЕманТрансАвто': 547000, 'Олимп': 547000, 'Агро-Авто': 550000, 'Веб-Логистика': 550000, 'ТК Сияние': 556500, 'Азимут': 620000},
+            'Иркутск': {'Примум': 500000, 'Агро-Авто': 636000, 'Азимут': 650000, 'ЕманТрансАвто': 660500, 'Олимп': 660500, 'ТК Сияние': 682500},
+            'Уфа': {'Буш-Авто': 162667, 'ТК Сияние': 189000, 'Азимут': 200000, 'АО Национальный': 225000, 'Агро-Авто': 225000}
+        }
+    return tariffs
+
+def plan_weekly_carrier_assignments(plan_trips, tariffs):
+    """
+    Распределяет перевозчиков и тарифы по рейсам согласно правилам:
+    1. Базово подбирается перевозчик с самым выгодным (минимальным/зеленым) тарифом из листа 'Актуальные'.
+    2. Исключение 1: НОРДЛАЙН привлекать только на Брянск, Казань задействовать ровно 2 рейса в неделю, Екатеринбург не привлекать.
+    3. Исключение 2: ТК Сияние распределять ровно 40% рейсов за исключением направлений Сибирь и Дальний Восток.
+    4. Исключение 3: ЕманТрансАвто привлекать только на Урал и Сибирь.
+    """
+    SIBERIA_FE = {'Новосибирск', 'Красноярск', 'Иркутск', 'Хабаровск'}
+    
+    # 1. Собираем все запланированные рейсы недели
+    all_trips = []
+    for d_name, d_short, offset in DAYS_MAPPING:
+        d_plan = plan_trips.get(d_name, {})
+        city_order = MASTER_CITY_ORDER.get(d_name, [])
+        for city in city_order:
+            cnt = d_plan.get(city, 0)
+            for tr_i in range(1, cnt + 1):
+                all_trips.append({
+                    'day': d_name,
+                    'city': city,
+                    'truck_num': tr_i,
+                    'cnt_in_day': cnt
+                })
+                
+    non_sib_fe = [t for t in all_trips if t['city'] not in SIBERIA_FE]
+    target_siyanie = round(len(non_sib_fe) * 0.40)
+    
+    assigned = {}
+    
+    # 2. Сибирь и Дальний Восток: только самые выгодные перевозчики (Сияние исключено)
+    for t in all_trips:
+        city = t['city']
+        d_name = t['day']
+        tr_i = t['truck_num']
+        key = (d_name, city, tr_i)
+        
+        if city in SIBERIA_FE:
+            if city == 'Хабаровск':
+                car = 'Примум' if tr_i == 1 else 'Азимут'
+            elif city == 'Новосибирск':
+                car = 'Примум' if tr_i == 1 else 'ЕманТрансАвто'
+            elif city == 'Красноярск':
+                car = 'Примум' if tr_i == 1 else 'Виллайн'
+            elif city == 'Иркутск':
+                car = 'Примум' if tr_i == 1 else 'Азимут'
+            else:
+                car = 'Примум'
+            tar = tariffs.get(city, {}).get(car, 0)
+            assigned[key] = (car, tar)
+            
+    # 3. Исключение 1: Казань — ровно 2 рейса в неделю для НОРДЛАЙН (во Вт и Ср)
+    kazan_nordline_count = 0
+    for target_day in ['Вт', 'Ср', 'Пн']:
+        if kazan_nordline_count >= 2:
+            break
+        key = (target_day, 'Казань', 1)
+        if key not in assigned:
+            for t in all_trips:
+                if t['day'] == target_day and t['city'] == 'Казань' and t['truck_num'] == 1:
+                    car = 'НОРДЛАЙН'
+                    tar = tariffs.get('Казань', {}).get(car, 118320)
+                    assigned[key] = (car, tar)
+                    kazan_nordline_count += 1
+                    break
+                    
+    # 4. Исключение 2: ТК Сияние получает ровно 40% рейсов европейско-уральских направлений
+    siyanie_candidates = []
+    for t in all_trips:
+        key = (t['day'], t['city'], t['truck_num'])
+        if key in assigned:
+            continue
+        city = t['city']
+        tr_i = t['truck_num']
+        d_name = t['day']
+        cnt = t['cnt_in_day']
+        
+        prio = 10
+        if cnt >= 2 and tr_i == 2:
+            prio = 1
+        elif cnt == 3 and tr_i == 3 and d_name in ['Вт', 'Чт']:
+            prio = 2
+        elif cnt == 1 and d_name in ['Вт', 'Чт', 'Сб']:
+            prio = 3
+        elif cnt == 1 and d_name in ['Пн', 'Ср', 'Вс']:
+            prio = 4
+        siyanie_candidates.append((prio, key, city))
+        
+    siyanie_candidates.sort(key=lambda x: x[0])
+    
+    for _, key, city in siyanie_candidates[:target_siyanie]:
+        tar = tariffs.get(city, {}).get('ТК Сияние', 0)
+        assigned[key] = ('ТК Сияние', tar)
+        
+    # 5. Все остальные рейсы — самый выгодный («зеленый») перевозчик
+    for t in all_trips:
+        key = (t['day'], t['city'], t['truck_num'])
+        if key in assigned:
+            continue
+        city = t['city']
+        tr_i = t['truck_num']
+        
+        if city == 'Брянск':
+            car = 'НОРДЛАЙН'
+        elif city == 'Ярославль':
+            car = 'Буш-Авто'
+        elif city == 'Воронеж':
+            car = 'Буш-Авто'
+        elif city == 'Санкт-Петербург':
+            car = 'Караван'
+        elif city == 'Казань':
+            car = 'Буш-Авто'
+        elif city == 'Волгоград':
+            car = 'Олимп'
+        elif city == 'Самара':
+            car = 'Олимп'
+        elif city == 'Краснодар':
+            car = 'Караван' if tr_i == 1 else 'Буш-Авто'
+        elif city == 'Екатеринбург':
+            car = 'Олимп' if tr_i == 1 else 'ЕманТрансАвто'
+        elif city == 'Уфа':
+            car = 'Буш-Авто'
         else:
-            return 'ИП Коршунов' if truck_num == 1 else 'ИП Гусманов'
-    elif city == 'Казань':
-        if day_name == 'Ср':
-            return ['НОРДЛАЙН', 'ТК Сияние', 'Агро-Авто'][min(truck_num-1, 2)]
-        elif day_name == 'Вт':
-            return 'ТК Сияние' if truck_num == 1 else 'Агро-Авто'
-        else:
-            return 'ТК Сияние'
-    elif city == 'Краснодар':
-        carriers = ['ТК Сияние', 'АО Национальный', 'Буш-Авто', 'Агро-Авто Отрада']
-        return carriers[min(truck_num-1, len(carriers)-1)]
-    elif city == 'Екатеринбург':
-        carriers = ['ТК Сияние', 'АО Национальный', 'Веб-Логистика', 'Азимут']
-        return carriers[min(truck_num-1, len(carriers)-1)]
-    elif city == 'Новосибирск':
-        return 'Виллайн' if truck_num == 1 else 'ЕманТрансАвто'
-    elif city == 'Красноярск':
-        return 'ТК Сияние' if day_name == 'Пт' else 'Виллайн'
-    elif city == 'Иркутск':
-        return 'Азимут' if day_name == 'Пт' else 'ЕманТрансАвто'
-    elif city == 'Санкт-Петербург':
-        return 'ТК Сияние' if truck_num == 1 else 'НОРДЛАЙН'
-    elif city == 'Хабаровск':
-        return 'Азимут'
-    elif city == 'Брянск':
-        return 'НОРДЛАЙН'
-    elif city in ['Волгоград', 'Воронеж', 'Самара']:
-        return 'ТК Сияние'
-    return 'ТК Сияние'
+            car = 'Олимп'
+            
+        tar = tariffs.get(city, {}).get(car, 0)
+        assigned[key] = (car, tar)
+        
+    return assigned
 
 def find_default_plan_file(base_dir):
     candidates = [
@@ -148,7 +350,7 @@ def parse_final_schedule_file(excel_path):
     """
     Считывает готовый график отгрузок (Недельные графики.xlsx), 
     в который сотрудник мог внести ручные правки в Excel 
-    (добавил/удалил машины, изменил время или перевозчика).
+    (добавил/удалил машины, изменил время, перевозчика или тариф).
     """
     wb = openpyxl.load_workbook(excel_path, data_only=True)
     all_trips = []
@@ -176,6 +378,14 @@ def parse_final_schedule_file(excel_path):
             truck_num = ws[f'F{row}'].value or 1
             pallets = ws[f'H{row}'].value or 33
             time_val = ws[f'K{row}'].value
+            tariff_val = ws[f'J{row}'].value
+            tariff_num = 0
+            if tariff_val is not None:
+                try:
+                    clean_t = str(tariff_val).replace(' ', '').replace('₽', '').replace('\xa0', '').replace(',', '.')
+                    tariff_num = int(float(clean_t))
+                except Exception:
+                    tariff_num = 0
             
             if isinstance(date_val, datetime):
                 dt_obj = date_val
@@ -203,6 +413,7 @@ def parse_final_schedule_file(excel_path):
                 'truck_num': truck_num,
                 'carrier': str(carrier_val or 'ТК Сияние').strip(),
                 'pallets': pallets,
+                'tariff': tariff_num,
                 'time': time_str
             })
             
@@ -212,6 +423,9 @@ def parse_final_schedule_file(excel_path):
 def build_schedule_from_plan(plan_trips, start_date, output_path):
     wb_out = openpyxl.Workbook()
     wb_out.remove(wb_out.active)
+    
+    tariffs = load_tariffs_matrix(os.path.dirname(output_path))
+    weekly_assignments = plan_weekly_carrier_assignments(plan_trips, tariffs)
     
     font_header = Font(name='Arial', size=10, bold=True)
     font_regular = Font(name='Arial', size=10)
@@ -246,8 +460,8 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
 
     col_widths = {
         'A': 28, 'B': 5, 'C': 13, 'D': 6, 'E': 12, 'F': 15,
-        'G': 20, 'H': 15, 'I': 26, 'J': 12, 'K': 16, 'L': 5,
-        'M': 25, 'N': 10, 'O': 10
+        'G': 20, 'H': 15, 'I': 26, 'J': 15, 'K': 16, 'L': 5,
+        'M': 25, 'N': 10, 'O': 10, 'P': 16
     }
 
     all_scheduled_trips = []
@@ -288,7 +502,7 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             for _ in range(count):
                 city_truck_counters[city] += 1
                 tr_num = city_truck_counters[city]
-                carrier = get_carrier_for_trip(city, tr_num, d_name)
+                carrier, tariff = weekly_assignments.get((d_name, city, tr_num), ('ТК Сияние', 0))
                 ordered_trips.append({
                     'date': d_str,
                     'dt': cur_date,
@@ -297,7 +511,8 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
                     'city': city,
                     'truck_num': tr_num,
                     'carrier': carrier,
-                    'pallets': pal
+                    'pallets': pal,
+                    'tariff': tariff
                 })
                 
         # Назначаем время: СТРОГО 2 МАШИНЫ В ЧАС!
@@ -357,7 +572,10 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             c_i.border = border_thin
             
             c_j = ws[f'J{row_idx}']
-            c_j.value = None
+            c_j.value = tr['tariff']
+            c_j.font = font_regular
+            c_j.number_format = '#,##0 ₽'
+            c_j.alignment = Alignment(horizontal='right', vertical='center')
             c_j.border = border_thin
             
             c_k = ws[f'K{row_idx}']
@@ -390,6 +608,10 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             ws['O3'].font = font_header
             ws['O3'].alignment = Alignment(horizontal='center')
             ws['O3'].border = border_summary_header
+            ws['P3'] = 'Сумма, ₽'
+            ws['P3'].font = font_header
+            ws['P3'].alignment = Alignment(horizontal='right')
+            ws['P3'].border = border_summary_header
             
             s_row = 4
             for car, cnt in carrier_counts.most_common():
@@ -408,6 +630,12 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
                 ws[f'O{s_row}'].number_format = '0.0%'
                 ws[f'O{s_row}'].alignment = Alignment(horizontal='right')
                 ws[f'O{s_row}'].border = border_thin
+
+                ws[f'P{s_row}'] = f'=SUMIF(I2:I{last_data_row}, M{s_row}, J2:J{last_data_row})'
+                ws[f'P{s_row}'].font = font_regular
+                ws[f'P{s_row}'].number_format = '#,##0 ₽'
+                ws[f'P{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'P{s_row}'].border = border_thin
                 s_row += 1
                 
             ws[f'M{s_row}'] = 'Всего'
@@ -424,6 +652,12 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             ws[f'O{s_row}'].alignment = Alignment(horizontal='right')
             ws[f'O{s_row}'].border = border_total
 
+            ws[f'P{s_row}'] = f'=SUM(P4:P{s_row-1})'
+            ws[f'P{s_row}'].font = font_header
+            ws[f'P{s_row}'].number_format = '#,##0 ₽'
+            ws[f'P{s_row}'].alignment = Alignment(horizontal='right')
+            ws[f'P{s_row}'].border = border_total
+
     wb_out.save(output_path)
     print(f"Таблица успешно создана: {output_path}")
     return all_scheduled_trips
@@ -433,6 +667,8 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
     rows_html = ""
     for tr in trips:
         bg_color = "#e2efda" if tr['pallets'] == 40 else "#ffffff"
+        tariff_val = tr.get('tariff', 0)
+        tariff_str = f"{tariff_val:,}".replace(",", " ") + " ₽" if tariff_val else "-"
         rows_html += f"""
         <tr style="background-color: {bg_color}; text-align: center;">
             <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['date']}</td>
@@ -441,6 +677,7 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
             <td style="padding: 8px; border: 1px solid #d9d9d9; text-align: left; font-weight: bold;">{tr['city']}</td>
             <td style="padding: 8px; border: 1px solid #d9d9d9;">№ {tr['truck_num']}</td>
             <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['pallets']} пал.</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold; text-align: right;">{tariff_str}</td>
         </tr>
         """
         
@@ -451,7 +688,7 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
         <meta charset="utf-8">
         <style>
             body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333333; }}
-            table {{ border-collapse: collapse; width: 100%; max-width: 650px; margin-top: 15px; margin-bottom: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; max-width: 720px; margin-top: 15px; margin-bottom: 20px; }}
             th {{ background-color: #2f5597; color: #ffffff; padding: 10px; border: 1px solid #2f5597; text-align: center; }}
             .notice {{ background-color: #fff2cc; border-left: 4px solid #d6b656; padding: 12px; margin: 15px 0; font-size: 13px; }}
             .footer {{ font-size: 12px; color: #7f7f7f; margin-top: 25px; border-top: 1px solid #e0e0e0; padding-top: 10px; }}
@@ -470,6 +707,7 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
                     <th>Направление</th>
                     <th>№ ТС</th>
                     <th>Паллеты</th>
+                    <th>Тариф</th>
                 </tr>
             </thead>
             <tbody>
