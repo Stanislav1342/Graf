@@ -530,11 +530,32 @@ def send_emails(req: EmailRequest):
     except Exception as e:
         return {"status": "error", "message": f"Ошибка Outlook: {str(e)}"}
 
+def find_available_port(start_port=8000, max_attempts=50):
+    """Находит свободный сетевой порт, если стандартный (8000) уже занят другим приложением"""
+    for p in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('0.0.0.0', p))
+                return p
+            except OSError:
+                continue
+    return start_port
+
 if __name__ == '__main__':
-    port = 8000
+    default_port = 8000
+    # Поддерживаем явное указание порта: python server.py 8080
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        port = int(sys.argv[1])
+    else:
+        port = find_available_port(default_port)
+
     local_ip = get_local_ip()
     print("\n" + "="*70)
-    print(f"🚀 Сервер запущен!")
+    if port != default_port:
+        print(f"ℹ️ Порт {default_port} сейчас занят другим проектом (например, Advantum).")
+        print(f"   Автоматически переключились на свободный порт: {port}")
+        print("-" * 70)
+    print(f"🚀 Сервер графиков отгрузок успешно запущен!")
     print(f"   • На этом компьютере:          http://localhost:{port}")
     print(f"   • Для коллег в сети Wi-Fi/LAN: http://{local_ip}:{port}")
     print("="*70 + "\n")
