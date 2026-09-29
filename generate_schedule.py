@@ -225,6 +225,7 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
                 carrier = get_carrier_for_trip(city, tr_num, d_name)
                 ordered_trips.append({
                     'date': d_str,
+                    'dt': cur_date,
                     'day': d_short,
                     'month': d_month,
                     'city': city,
@@ -468,7 +469,7 @@ def send_emails_via_outlook(all_trips, target_email="n.rozhkov@puls.ru", draft_m
     sent_count = 0
     for carrier, c_trips in sorted(carrier_trips.items()):
         # Сортируем рейсы перевозчика по хронологии
-        sorted_trips = sorted(c_trips, key=lambda x: (x['date'], x['time']))
+        sorted_trips = sorted(c_trips, key=lambda x: (x.get('dt') or datetime.strptime(x['date'], '%d.%m.%Y'), x['time']))
         
         mail = outlook.CreateItem(0) # 0 = olMailItem
         mail.To = target_email
