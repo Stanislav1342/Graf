@@ -2,6 +2,8 @@
 *.xlsx
 *.xlsm
 *.xls
+готовые_графики/
+output/
 
 # Python cache & environments
 __pycache__/

@@ -40,6 +40,8 @@ def get_local_ip():
             return "127.0.0.1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(BASE_DIR, "готовые_графики")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 OUTPUT_FILE = os.path.join(BASE_DIR, "Недельные графики (готовый).xlsx")
 
 def load_carriers_contacts():
@@ -65,7 +67,9 @@ CURRENT_STATE = {
     "all_trips": [],
     "week_range": "",
     "total_trips": 0,
-    "carriers": []
+    "carriers": [],
+    "last_output_path": OUTPUT_FILE,
+    "last_output_filename": "Недельные графики (готовый).xlsx"
 }
 
 class EmailRequest(BaseModel):
@@ -205,8 +209,8 @@ def index_page():
       </div>
 
       <div style="margin: 15px 0;">
-        <a href="/api/download" class="btn btn-success btn-block" style="padding: 12px; font-size: 15px;">
-          📥 Скачать Недельные графики (готовый).xlsx
+        <a href="/api/download" id="downloadBtn" class="btn btn-success btn-block" style="padding: 12px; font-size: 15px;">
+          📥 Скачать готовый график (.xlsx)
         </a>
       </div>
 
@@ -337,6 +341,9 @@ def index_page():
             select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов)</option>`;
           });
 
+          if (data.filename) {
+            document.getElementById('downloadBtn').innerText = '📥 Скачать ' + data.filename;
+          }
           document.getElementById('resultCard').style.display = 'block';
           document.getElementById('emailCard').style.display = 'block';
           processBtn.innerText = '✅ Обработано';
@@ -426,9 +433,28 @@ async def upload_file(file: UploadFile = File(...)):
         with open(temp_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
             
-        # Запускаем парсинг и генерацию
+        # Запускаем парсинг
         plan_trips, start_date = core.parse_plan_file(temp_path)
-        all_trips = core.build_schedule_from_plan(plan_trips, start_date, OUTPUT_FILE)
+        
+        # Формируем имя готового файла на основе загруженного
+        base_name = os.path.splitext(file.filename)[0]
+        out_filename = f"{base_name} (готовый).xlsx"
+        target_path = os.path.join(OUTPUT_DIR, out_filename)
+        
+        # Защита от блокировки в Excel: если файл уже открыт кем-то на компьютере
+        try:
+            all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
+        except PermissionError:
+            import time
+            out_filename = f"{base_name} (готовый)_{int(time.time())}.xlsx"
+            target_path = os.path.join(OUTPUT_DIR, out_filename)
+            all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
+            
+        # Также обновляем общий файл в корне (если он не заблокирован в Excel)
+        try:
+            shutil.copy2(target_path, OUTPUT_FILE)
+        except Exception:
+            pass
         
         # Считаем статистику
         carrier_counts = Counter([t['carrier'] for t in all_trips if t.get('carrier')])
@@ -441,23 +467,31 @@ async def upload_file(file: UploadFile = File(...)):
         CURRENT_STATE["week_range"] = week_range
         CURRENT_STATE["total_trips"] = len(all_trips)
         CURRENT_STATE["carriers"] = carriers_list
+        CURRENT_STATE["last_output_path"] = target_path
+        CURRENT_STATE["last_output_filename"] = out_filename
         
         return {
             "status": "success",
             "week_range": week_range,
             "total_trips": len(all_trips),
-            "carriers": carriers_list
+            "carriers": carriers_list,
+            "filename": out_filename
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/download")
 def download_schedule():
-    if not os.path.exists(OUTPUT_FILE):
+    file_path = CURRENT_STATE.get("last_output_path")
+    filename = CURRENT_STATE.get("last_output_filename", "Недельные графики (готовый).xlsx")
+    if not file_path or not os.path.exists(file_path):
+        file_path = OUTPUT_FILE
+        filename = "Недельные графики (готовый).xlsx"
+    if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Файл еще не сформирован")
     return FileResponse(
-        OUTPUT_FILE,
-        filename="Недельные графики (готовый).xlsx",
+        file_path,
+        filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
