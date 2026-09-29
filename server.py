@@ -10,6 +10,7 @@ import sys
 import shutil
 import tempfile
 import webbrowser
+import socket
 from datetime import datetime
 from typing import Optional, List
 from collections import Counter, defaultdict
@@ -21,6 +22,21 @@ import uvicorn
 
 # Импортируем бизнес-логику из generate_schedule.py
 import generate_schedule as core
+
+def get_local_ip():
+    """Определяет локальный IP-адрес компьютера в корпоративной сети / Wi-Fi"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "127.0.0.1"
 
 app = FastAPI(title="Графики отгрузки филиалов — ФК ПУЛЬС")
 
@@ -516,11 +532,14 @@ def send_emails(req: EmailRequest):
 
 if __name__ == '__main__':
     port = 8000
-    print(f"\n" + "="*70)
-    print(f"🚀 Запуск локального сервера графиков отгрузок: http://localhost:{port}")
-    print(f"="*70)
+    local_ip = get_local_ip()
+    print("\n" + "="*70)
+    print(f"🚀 Сервер запущен!")
+    print(f"   • На этом компьютере:          http://localhost:{port}")
+    print(f"   • Для коллег в сети Wi-Fi/LAN: http://{local_ip}:{port}")
+    print("="*70 + "\n")
     try:
         webbrowser.open(f"http://localhost:{port}")
     except Exception:
         pass
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
