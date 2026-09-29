@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import webbrowser
 import socket
+import json
 from datetime import datetime
 from typing import Optional, List
 from collections import Counter, defaultdict
@@ -38,10 +39,26 @@ def get_local_ip():
         except Exception:
             return "127.0.0.1"
 
-app = FastAPI(title="Графики отгрузки филиалов — ФК ПУЛЬС")
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(BASE_DIR, "Недельные графики (готовый).xlsx")
+
+def load_carriers_contacts():
+    """Загружает справочник email-адресов перевозчиков из carriers_contacts.json"""
+    contacts_file = os.path.join(BASE_DIR, "carriers_contacts.json")
+    if os.path.exists(contacts_file):
+        try:
+            with open(contacts_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Ошибка чтения {contacts_file}: {e}")
+    return {}
+
+def get_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
+    """Возвращает email перевозчика из carriers_contacts.json (или дефолтный)"""
+    contacts = load_carriers_contacts()
+    return contacts.get(carrier_name, fallback_email)
+
+app = FastAPI(title="Графики отгрузки филиалов — ФК ПУЛЬС")
 
 # Состояние последней обработки в памяти
 CURRENT_STATE = {
@@ -54,7 +71,7 @@ CURRENT_STATE = {
 class EmailRequest(BaseModel):
     mode: str # 'draft' или 'send'
     carrier: Optional[str] = None # None = всем перевозчикам, строка = конкретному
-    email: str = "n.rozhkov@puls.ru"
+    email: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 def index_page():
@@ -89,10 +106,8 @@ def index_page():
     body { background: linear-gradient(180deg, #edf2f7 0%, #f8fafc 100%); color: var(--text); min-height: 100vh; padding: 30px 20px; }
     .container { max-width: 900px; margin: 0 auto; }
     
-    .header { background: var(--surface); padding: 24px 30px; border-radius: var(--radius); box-shadow: var(--shadow-sm); border-bottom: 3px solid var(--primary); margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
-    .header-title h1 { font-size: 22px; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 10px; }
-    .header-title p { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
-    .badge { background: var(--primary-light); color: var(--primary); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .header { background: var(--surface); padding: 22px 30px; border-radius: var(--radius); box-shadow: var(--shadow-sm); border-bottom: 3px solid var(--primary); margin-bottom: 24px; }
+    .header-title h1 { font-size: 24px; font-weight: 700; color: var(--primary); }
     
     .card { background: var(--surface); border-radius: var(--radius); padding: 24px 30px; box-shadow: var(--shadow-sm); border: 1px solid var(--border-light); margin-bottom: 24px; transition: all 0.2s ease; }
     .card-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--text); display: flex; align-items: center; gap: 8px; }
@@ -139,10 +154,6 @@ def index_page():
     .form-control { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
     .form-control:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
     
-    .alert { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 15px; display: none; }
-    .alert-success { background: var(--success-bg); color: var(--success); border: 1px solid #86efac; display: flex; align-items: center; gap: 8px; }
-    .alert-info { background: var(--primary-light); color: var(--primary); border: 1px solid #bfdbfe; display: flex; align-items: center; gap: 8px; }
-    
     .choice-box { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 10px; }
     .choice-box:hover { border-color: var(--primary); background: #f8fafc; }
     .choice-box input[type="radio"] { margin-right: 5px; accent-color: var(--primary); width: 16px; height: 16px; }
@@ -155,10 +166,8 @@ def index_page():
     
     <div class="header">
       <div class="header-title">
-        <h1>🚚 Графики отгрузки филиалов</h1>
-        <p>РЦ Черная Грязь • ФК «ПУЛЬС»</p>
+        <h1>Графики отгрузки филиалов</h1>
       </div>
-      <div class="badge">Регламент: 2 машины/час</div>
     </div>
 
     <!-- Шаг 1: Загрузка файла -->
@@ -210,14 +219,6 @@ def index_page():
     <!-- Шаг 3: Рассылка в Outlook -->
     <div class="card" id="emailCard" style="display:none;">
       <div class="card-title">✉️ 3. Персональная отправка через Outlook</div>
-      <div class="alert alert-info" style="display:flex;">
-        🔒 <b>Конфиденциальность:</b> Каждый перевозчик получает строго таблицу ТОЛЬКО со своими рейсами и тайм-слотами.
-      </div>
-
-      <div class="form-group" style="margin-top: 15px;">
-        <label class="form-label">Тестовый email-получатель:</label>
-        <input type="email" id="targetEmailInput" class="form-control" value="n.rozhkov@puls.ru">
-      </div>
 
       <div class="actions-grid">
         <button class="btn btn-primary" onclick="openSendModal(null)">
@@ -247,7 +248,6 @@ def index_page():
 
         <div style="background: #f1f5f9; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;">
           <div id="modalTargetInfo"><b>Кому:</b> Все перевозчики</div>
-          <div style="margin-top: 4px;"><b>Куда (тест):</b> <span id="modalTargetEmail">n.rozhkov@puls.ru</span></div>
         </div>
 
         <div class="form-group">
@@ -356,8 +356,6 @@ def index_page():
 
     function openSendModal(target) {
       currentModalTarget = target;
-      const email = document.getElementById('targetEmailInput').value;
-      document.getElementById('modalTargetEmail').innerText = email;
 
       if (target === 'select') {
         document.getElementById('modalTitle').innerText = 'Выбор перевозчика для отправки';
@@ -385,7 +383,6 @@ def index_page():
 
     async function executeEmailSend() {
       const mode = document.querySelector('input[name="sendMode"]:checked').value;
-      const email = document.getElementById('targetEmailInput').value;
       let carrier = null;
       if (currentModalTarget === 'select') {
         carrier = document.getElementById('carrierSelect').value;
@@ -399,7 +396,7 @@ def index_page():
         const resp = await fetch('/api/send-emails', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: mode, carrier: carrier, email: email })
+          body: JSON.stringify({ mode: mode, carrier: carrier })
         });
         const res = await resp.json();
         if (res.status === 'success') {
@@ -506,9 +503,10 @@ def send_emails(req: EmailRequest):
         
         sent_count = 0
         for car, c_trips in carrier_groups.items():
+            carrier_email = (req.email if req.email else None) or get_carrier_email(car)
             sorted_trips = sorted(c_trips, key=lambda x: (x.get('dt') or datetime.strptime(x['date'], '%d.%m.%Y'), x['time']))
             mail = outlook.CreateItem(0)
-            mail.To = req.email
+            mail.To = carrier_email
             mail.Subject = f"[{car}] График погрузки РЦ Черная Грязь ({start_d} - {end_d})"
             mail.HTMLBody = core.generate_carrier_html(car, sorted_trips, start_d, end_d)
             
@@ -519,7 +517,7 @@ def send_emails(req: EmailRequest):
             sent_count += 1
             
         action_text = "сохранено в Черновиках" if draft_mode else "отправлено"
-        msg = f"Успешно {action_text} писем: {sent_count} шт. на адрес {req.email}"
+        msg = f"Успешно {action_text} писем перевозчикам: {sent_count} шт."
         return {"status": "success", "message": msg, "count": sent_count}
         
     except ImportError:

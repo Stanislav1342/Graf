@@ -16,6 +16,7 @@ import sys
 import os
 import re
 import glob
+import json
 import argparse
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
@@ -466,13 +467,24 @@ def send_emails_via_outlook(all_trips, target_email="n.rozhkov@puls.ru", draft_m
         print("Убедитесь, что Microsoft Outlook запущен на компьютере.")
         return
 
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    contacts_file = os.path.join(base_dir, 'carriers_contacts.json')
+    contacts = {}
+    if os.path.exists(contacts_file):
+        try:
+            with open(contacts_file, 'r', encoding='utf-8') as f:
+                contacts = json.load(f)
+        except Exception:
+            pass
+
     sent_count = 0
     for carrier, c_trips in sorted(carrier_trips.items()):
         # Сортируем рейсы перевозчика по хронологии
         sorted_trips = sorted(c_trips, key=lambda x: (x.get('dt') or datetime.strptime(x['date'], '%d.%m.%Y'), x['time']))
         
+        recipient = contacts.get(carrier, target_email)
         mail = outlook.CreateItem(0) # 0 = olMailItem
-        mail.To = target_email
+        mail.To = recipient
         mail.Subject = f"[{carrier}] График погрузки РЦ Черная Грязь ({start_d} - {end_d})"
         mail.HTMLBody = generate_carrier_html(carrier, sorted_trips, start_d, end_d)
         
