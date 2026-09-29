@@ -12,7 +12,7 @@ import tempfile
 import webbrowser
 import socket
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 from collections import Counter, defaultdict
 
@@ -436,21 +436,35 @@ async def upload_file(file: UploadFile = File(...)):
         # Запускаем парсинг
         plan_trips, start_date = core.parse_plan_file(temp_path)
         
-        # Формируем имя готового файла на основе загруженного
+        # Точные календарные границы недели
+        end_date = start_date + timedelta(days=6)
+        date_range_str = f"{start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m.%Y')}"
+        
+        # Имя файла с датами: например, График_отгрузки_филиалов_неделя_2 (28.09 - 04.10.2026).xlsx
         base_name = os.path.splitext(file.filename)[0]
-        out_filename = f"{base_name} (готовый).xlsx"
-        target_path = os.path.join(OUTPUT_DIR, out_filename)
+        out_filename = f"{base_name} ({date_range_str}).xlsx"
+        
+        # Подпапка по месяцам: например, готовые_графики/2026-10 (Октябрь)/
+        month_name = core.RUSSIAN_MONTHS.get(start_date.month, '')
+        month_folder = f"{start_date.year}-{start_date.month:02d} ({month_name})"
+        month_dir = os.path.join(OUTPUT_DIR, month_folder)
+        os.makedirs(month_dir, exist_ok=True)
+        target_path = os.path.join(month_dir, out_filename)
         
         # Защита от блокировки в Excel: если файл уже открыт кем-то на компьютере
         try:
             all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
         except PermissionError:
             import time
-            out_filename = f"{base_name} (готовый)_{int(time.time())}.xlsx"
-            target_path = os.path.join(OUTPUT_DIR, out_filename)
+            out_filename = f"{base_name} ({date_range_str})_{int(time.time())}.xlsx"
+            target_path = os.path.join(month_dir, out_filename)
             all_trips = core.build_schedule_from_plan(plan_trips, start_date, target_path)
             
-        # Также обновляем общий файл в корне (если он не заблокирован в Excel)
+        # Копия в корень готовые_графики/ и в основной файл Недельные графики (готовый).xlsx
+        try:
+            shutil.copy2(target_path, os.path.join(OUTPUT_DIR, out_filename))
+        except Exception:
+            pass
         try:
             shutil.copy2(target_path, OUTPUT_FILE)
         except Exception:
