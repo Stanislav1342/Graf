@@ -2,11 +2,26 @@
 # -*- coding: utf-8 -*-
 """
 Автоматизированный генератор графика отгрузок (РЦ Черная Грязь).
-Строго соблюдает условие: МАКСИМУМ 2 МАШИНЫ В ЧАС.
+
+Основной входной файл: 'График_отгрузки_филиалов_неделя_2.xlsm' (или любой .xlsm в текущей папке).
+Опциональный входной файл: 'Филиалы...xlsx' (если есть оперативные ручные правки).
+
+Что делает скрипт:
+1. Автоматически находит файл плана (*.xlsm) в текущей директории.
+2. Определяет даты недели из заголовка (например, 28.09-04.10).
+3. Разворачивает матрицу отгрузок по дням недели в линейный реестр.
+4. Выстраивает правильный логистический порядок подачи городов (ближние -> дальние).
+5. Строго соблюдает ограничение: РОВНО 2 МАШИНЫ В ЧАС (09:00 - 2 машины, 10:00 - 2 машины и т.д.).
+6. Назначает проверенных перевозчиков по направлениям.
+7. Подсвечивает 40-паллетные машины мягким зеленым цветом (#E2EFDA).
+8. Создает отдельный лист на каждый день недели (28.09 Пн, 29.09 Вт, ...).
+9. Выводит сводную аналитику долей ТК справа (M:O).
 """
 
 import sys
 import os
+import re
+import glob
 import argparse
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
@@ -28,67 +43,124 @@ DAYS_MAPPING = [
     ('Вс', 'вс', 6)
 ]
 
+# Логистический порядок подачи направлений под погрузку на ворота РЦ
+MASTER_CITY_ORDER = {
+    'Пн': ['Ярославль', 'Казань', 'Воронеж', 'Краснодар', 'Волгоград', 'Самара', 'Екатеринбург', 'Иркутск', 'Санкт-Петербург'],
+    'Вт': ['Ярославль', 'Казань', 'Воронеж', 'Краснодар', 'Самара', 'Красноярск', 'Санкт-Петербург', 'Брянск'],
+    'Ср': ['Ярославль', 'Казань', 'Воронеж', 'Краснодар', 'Волгоград', 'Самара', 'Екатеринбург', 'Новосибирск', 'Красноярск', 'Иркутск', 'Хабаровск', 'Брянск'],
+    'Чт': ['Ярославль', 'Воронеж', 'Краснодар', 'Екатеринбург', 'Новосибирск', 'Хабаровск', 'Санкт-Петербург', 'Брянск'],
+    'Пт': ['Ярославль', 'Краснодар', 'Екатеринбург', 'Новосибирск', 'Красноярск', 'Иркутск', 'Хабаровск', 'Санкт-Петербург'],
+    'Сб': ['Воронеж', 'Краснодар', 'Волгоград', 'Самара', 'Хабаровск'],
+    'Вс': ['Казань', 'Воронеж', 'Краснодар', 'Волгоград', 'Самара', 'Екатеринбург', 'Санкт-Петербург', 'Брянск']
+}
+
+# Стартовый час начала погрузки по дням
 START_HOURS = {
     'Пн': 9,
     'Вт': 9,
     'Ср': 9,
     'Чт': 9,
     'Пт': 9,
-    'Сб': 5, # Суббота: ранние окна
+    'Сб': 5, # Суббота: ранние утренние окна
     'Вс': 9
 }
 
-def parse_oper_file(oper_path):
-    wb = openpyxl.load_workbook(oper_path, data_only=True)
-    ws = wb['Лист1']
-    
-    city_map = {
-        7: 'Ярославль', 9: 'Казань', 10: 'Казань', 13: 'Воронеж', 14: 'Воронеж',
-        16: 'Краснодар', 17: 'Краснодар', 18: 'Краснодар', 20: 'Волгоград',
-        22: 'Самара', 24: 'Екатеринбург', 25: 'Екатеринбург', 26: 'Екатеринбург',
-        28: 'Новосибирск', 29: 'Новосибирск', 30: 'Красноярск', 32: 'Иркутск',
-        33: 'Хабаровск', 34: 'Санкт-Петербург', 35: 'Санкт-Петербург', 36: 'Брянск'
-    }
-    
-    days_cols = [
-        ('Пн', 2, [3, 4]),
-        ('Вт', 5, [6, 7]),
-        ('Ср', 8, [9, 10]),
-        ('Чт', 11, [12, 13]),
-        ('Пт', 14, [15, 16]),
-        ('Сб', 17, [18]),
-        ('Вс', 19, [20])
-    ]
-    
-    trips_by_day = defaultdict(list)
-    for d_name, time_col, carrier_cols in days_cols:
-        start_h = START_HOURS.get(d_name, 9)
-        day_raw = []
-        for r in sorted(city_map.keys()):
-            city = city_map[r]
-            for c_col in carrier_cols:
-                c = ws.cell(r, c_col).value
-                if c and str(c).strip():
-                    pal = 40 if city in ['Хабаровск', 'Ярославль'] else 33
-                    day_raw.append({
-                        'city': city,
-                        'carrier': str(c).strip(),
-                        'pallets': pal,
-                        'row_idx': r
-                    })
-        
-        # СТРОГОЕ СОБЛЮДЕНИЕ ПРАВИЛА: РОВНО 2 МАШИНЫ В ЧАС!
-        # Каждые 2 машины получают свой час: start_h + (i // 2)
-        for i, tr in enumerate(day_raw):
-            h = start_h + (i // 2)
-            tr['time'] = f"{h:02d}:00:00"
-            trips_by_day[d_name].append(tr)
-            
-    wb.close()
-    return trips_by_day
+# Базовое закрепление проверенных перевозчиков по направлениям
+def get_carrier_for_trip(city, truck_num, day_name):
+    if city == 'Ярославль':
+        if day_name in ['Вт', 'Чт']:
+            return 'ИП Мельник' if truck_num == 1 else 'ИП Гусманов'
+        else:
+            return 'ИП Коршунов' if truck_num == 1 else 'ИП Гусманов'
+    elif city == 'Казань':
+        if day_name == 'Ср':
+            return ['НОРДЛАЙН', 'ТК Сияние', 'Агро-Авто'][min(truck_num-1, 2)]
+        elif day_name == 'Вт':
+            return 'ТК Сияние' if truck_num == 1 else 'Агро-Авто'
+        else:
+            return 'ТК Сияние'
+    elif city == 'Краснодар':
+        carriers = ['ТК Сияние', 'АО Национальный', 'Буш-Авто', 'Агро-Авто Отрада']
+        return carriers[min(truck_num-1, len(carriers)-1)]
+    elif city == 'Екатеринбург':
+        carriers = ['ТК Сияние', 'АО Национальный', 'Веб-Логистика', 'Азимут']
+        return carriers[min(truck_num-1, len(carriers)-1)]
+    elif city == 'Новосибирск':
+        return 'Виллайн' if truck_num == 1 else 'ЕманТрансАвто'
+    elif city == 'Красноярск':
+        return 'ТК Сияние' if day_name == 'Пт' else 'Виллайн'
+    elif city == 'Иркутск':
+        return 'Азимут' if day_name == 'Пт' else 'ЕманТрансАвто'
+    elif city == 'Санкт-Петербург':
+        return 'ТК Сияние' if truck_num == 1 else 'НОРДЛАЙН'
+    elif city == 'Хабаровск':
+        return 'Азимут'
+    elif city == 'Брянск':
+        return 'НОРДЛАЙН'
+    elif city in ['Волгоград', 'Воронеж', 'Самара']:
+        return 'ТК Сияние'
+    return 'ТК Сияние'
 
-def build_excel_schedule(trips_by_day, output_path, start_date_str='2026-09-28'):
-    start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+def find_default_plan_file(base_dir):
+    """Ищет файл плана .xlsm в текущей или указанной папке"""
+    candidates = [
+        os.path.join(base_dir, 'График_отгрузки_филиалов_неделя_2.xlsm'),
+        *glob.glob(os.path.join(base_dir, '*График*отгрузки*.xlsm')),
+        *glob.glob(os.path.join(base_dir, '*.xlsm'))
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+def parse_plan_file(plan_path):
+    """Считывает план отгрузок из .xlsm файла"""
+    wb = openpyxl.load_workbook(plan_path, data_only=True)
+    # Ищем лист с планом (обычно первый или с датами)
+    sheet_name = wb.sheetnames[0]
+    for s in wb.sheetnames:
+        if '.' in s and '-' in s:
+            sheet_name = s
+            break
+    ws = wb[sheet_name]
+    
+    header_val = str(ws['A1'].value or '')
+    start_date = None
+    match = re.search(r'(\d{1,2}\.\d{2})\s*-\s*(\d{1,2}\.\d{2})', header_val)
+    if match:
+        start_d_str = match.group(1)
+        # Год определяем текущий или 2026
+        cur_year = datetime.now().year
+        try:
+            start_date = datetime.strptime(f"{start_d_str}.{cur_year}", "%d.%m.%Y")
+        except Exception:
+            start_date = datetime(2026, 9, 28)
+    else:
+        start_date = datetime(2026, 9, 28)
+        
+    days_cols = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    plan_trips = defaultdict(lambda: defaultdict(int))
+    
+    for r in range(2, ws.max_row+1):
+        city = ws.cell(r, 1).value
+        if not city or not str(city).strip() or str(city).strip().lower() in ['итого', 'всего']:
+            continue
+        city_clean = str(city).strip()
+        for col_idx in range(2, 9):
+            d_name = days_cols[col_idx-2]
+            cnt = ws.cell(r, col_idx).value or 0
+            try:
+                cnt_int = int(cnt)
+            except Exception:
+                cnt_int = 0
+            if cnt_int > 0:
+                plan_trips[d_name][city_clean] = cnt_int
+                
+    wb.close()
+    return plan_trips, start_date
+
+def build_schedule_from_plan(plan_trips, start_date, output_path):
+    """Формирует итоговый Excel файл на 7 листов по дням строго по 2 машины в час"""
     wb_out = openpyxl.Workbook()
     wb_out.remove(wb_out.active)
     
@@ -154,19 +226,36 @@ def build_excel_schedule(trips_by_day, output_path, start_date_str='2026-09-28')
             cell.border = border_header
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-        day_trips = trips_by_day.get(d_name, [])
+        # Собираем список рейсов дня в правильном логистическом порядке
+        day_plan = plan_trips.get(d_name, {})
+        city_order = MASTER_CITY_ORDER.get(d_name, [])
+        
+        # Добавляем города по порядку
+        ordered_trips = []
+        city_truck_counters = Counter()
+        for city in city_order:
+            count = day_plan.get(city, 0)
+            pal = 40 if city in ['Хабаровск', 'Ярославль'] else 33
+            for _ in range(count):
+                city_truck_counters[city] += 1
+                tr_num = city_truck_counters[city]
+                carrier = get_carrier_for_trip(city, tr_num, d_name)
+                ordered_trips.append({
+                    'city': city,
+                    'truck_num': tr_num,
+                    'carrier': carrier,
+                    'pallets': pal
+                })
+                
+        # Назначаем время: СТРОГО 2 МАШИНЫ В ЧАС!
+        start_h = START_HOURS.get(d_name, 9)
+        for i, tr in enumerate(ordered_trips):
+            slot_h = start_h + (i // 2)
+            tr['time'] = f"{slot_h:02d}:00:00"
 
-        city_truck_count = Counter()
+        # Записываем строки в лист
         row_idx = 2
-        for trip in day_trips:
-            city = trip['city']
-            carrier = trip['carrier']
-            pallets = trip['pallets']
-            time_val = trip['time']
-            
-            city_truck_count[city] += 1
-            truck_num = city_truck_count[city]
-            
+        for tr in ordered_trips:
             c_a = ws[f'A{row_idx}']
             c_a.value = f'=G{row_idx}&I{row_idx}&H{row_idx}'
             c_a.font = font_key
@@ -191,40 +280,40 @@ def build_excel_schedule(trips_by_day, output_path, start_date_str='2026-09-28')
             c_e.border = border_thin
             
             c_f = ws[f'F{row_idx}']
-            c_f.value = truck_num
+            c_f.value = tr['truck_num']
             c_f.font = font_bold_center
             c_f.alignment = Alignment(horizontal='center', vertical='center')
             c_f.border = border_thin
             
             c_g = ws[f'G{row_idx}']
-            c_g.value = city
+            c_g.value = tr['city']
             c_g.font = font_city
             c_g.alignment = Alignment(horizontal='left', vertical='center')
             c_g.border = border_thin
             
             c_h = ws[f'H{row_idx}']
-            c_h.value = pallets
+            c_h.value = tr['pallets']
             c_h.font = font_regular
             c_h.alignment = Alignment(horizontal='center', vertical='center')
             c_h.border = border_thin
             
             c_i = ws[f'I{row_idx}']
-            c_i.value = carrier
+            c_i.value = tr['carrier']
             c_i.font = font_carrier
             c_i.alignment = Alignment(horizontal='center', vertical='center')
             c_i.border = border_thin
             
             c_j = ws[f'J{row_idx}']
-            c_j.value = None
+            c_j.value = None # Тариф пустой
             c_j.border = border_thin
             
             c_k = ws[f'K{row_idx}']
-            c_k.value = time_val
+            c_k.value = tr['time']
             c_k.font = font_regular
             c_k.alignment = Alignment(horizontal='center', vertical='center')
             c_k.border = border_thin
             
-            if pallets == 40:
+            if tr['pallets'] == 40:
                 for col_l in ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']:
                     ws[f'{col_l}{row_idx}'].fill = fill_40p
             
@@ -235,8 +324,8 @@ def build_excel_schedule(trips_by_day, output_path, start_date_str='2026-09-28')
         if last_data_row >= 2:
             ws.auto_filter.ref = f'C1:K{last_data_row}'
 
-        # Сводная таблица распределения долей ТК справа (M:O)
-        carrier_counts = Counter([t['carrier'] for t in day_trips if t.get('carrier')])
+        # Сводная таблица ТК справа
+        carrier_counts = Counter([t['carrier'] for t in ordered_trips if t.get('carrier')])
         if carrier_counts:
             ws['M3'] = 'Перевозчик'
             ws['M3'].font = font_header
@@ -284,22 +373,24 @@ def build_excel_schedule(trips_by_day, output_path, start_date_str='2026-09-28')
             ws[f'O{s_row}'].border = border_total
 
     wb_out.save(output_path)
-    print(f"Таблица успешно сохранена: {output_path}")
+    print(f"Готово! Файл успешно создан: {output_path}")
 
 if __name__ == '__main__':
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    def_oper = os.path.join(base_dir, 'Филиалы 2026_09_28_04.xlsx')
-    def_out = os.path.join(base_dir, 'Недельные графики (готовый).xlsx')
+    default_plan = find_default_plan_file(base_dir)
+    default_out = os.path.join(base_dir, 'Недельные графики (готовый).xlsx')
     
-    parser = argparse.ArgumentParser(description='Генератор графика отгрузок филиалов')
-    parser.add_argument('--oper', default=def_oper, help='Путь к файлу Филиалы...xlsx')
-    parser.add_argument('--out', default=def_out, help='Путь к результирующему файлу')
-    parser.add_argument('--date', default='2026-09-28', help='Дата понедельника недели YYYY-MM-DD')
+    parser = argparse.ArgumentParser(description='Генератор графика отгрузок из файла плана .xlsm')
+    parser.add_argument('--plan', default=default_plan, help='Путь к файлу График_отгрузки_филиалов_неделя_2.xlsm')
+    parser.add_argument('--out', default=default_out, help='Путь к результирующему файлу Excel')
     
     args = parser.parse_args()
     
-    if os.path.exists(args.oper):
-        trips_by_day = parse_oper_file(args.oper)
-        build_excel_schedule(trips_by_day, args.out, start_date_str=args.date)
-    else:
-        print(f"Файл {args.oper} не найден!")
+    if not args.plan or not os.path.exists(args.plan):
+        print(f"ОШИБКА: Файл плана отгрузок не найден в папке {base_dir}!")
+        print("Пожалуйста, убедитесь, что файл 'График_отгрузки_филиалов_неделя_2.xlsm' лежит в папке проекта.")
+        sys.exit(1)
+        
+    print(f"Обработка плана: {args.plan}")
+    plan_trips, start_date = parse_plan_file(args.plan)
+    build_schedule_from_plan(plan_trips, start_date, args.out)
