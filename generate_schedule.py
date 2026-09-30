@@ -821,14 +821,16 @@ def send_emails_via_outlook(all_trips, target_email="n.rozhkov@puls.ru", draft_m
         return
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    contacts_file = os.path.join(base_dir, 'carriers_contacts.json')
     contacts = {}
-    if os.path.exists(contacts_file):
-        try:
-            with open(contacts_file, 'r', encoding='utf-8') as f:
-                contacts = json.load(f)
-        except Exception:
-            pass
+    for fname in ['contacts_schedules.json', 'carriers_contacts.json']:
+        contacts_file = os.path.join(base_dir, fname)
+        if os.path.exists(contacts_file):
+            try:
+                with open(contacts_file, 'r', encoding='utf-8') as f:
+                    contacts = json.load(f)
+                    break
+            except Exception:
+                pass
 
     sent_count = 0
     for carrier, c_trips in sorted(carrier_trips.items()):

@@ -95,21 +95,42 @@ def get_orders_dir():
     """Возвращает путь к целевой папке 'Заявки'"""
     return orders_core.get_orders_dir()
 
-def load_carriers_contacts():
-    """Загружает справочник email-адресов перевозчиков из carriers_contacts.json"""
-    contacts_file = os.path.join(BASE_DIR, "carriers_contacts.json")
-    if os.path.exists(contacts_file):
-        try:
-            with open(contacts_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Ошибка чтения {contacts_file}: {e}")
+def load_schedules_contacts():
+    """Загружает справочник email-адресов перевозчиков для Графиков филиалов"""
+    for fname in ["contacts_schedules.json", "carriers_contacts.json"]:
+        p = os.path.join(BASE_DIR, fname)
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Ошибка чтения {p}: {e}")
     return {}
 
-def get_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
-    """Возвращает email перевозчика из carriers_contacts.json (или дефолтный)"""
-    contacts = load_carriers_contacts()
+def get_schedule_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
+    """Возвращает email перевозчика для Графиков филиалов (из contacts_schedules.json)"""
+    contacts = load_schedules_contacts()
     return contacts.get(carrier_name, fallback_email)
+
+def load_orders_contacts():
+    """Загружает справочник email-адресов перевозчиков для Заявок"""
+    p = os.path.join(BASE_DIR, "contacts_orders.json")
+    if os.path.exists(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Ошибка чтения {p}: {e}")
+    return {}
+
+def get_order_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
+    """Возвращает email перевозчика для Заявок (из contacts_orders.json)"""
+    contacts = load_orders_contacts()
+    return contacts.get(carrier_name, fallback_email)
+
+# Совместимость
+load_carriers_contacts = load_schedules_contacts
+get_carrier_email = get_schedule_carrier_email
 
 app = FastAPI(title="Транспортный отдел — РЦ Черная Грязь")
 
@@ -1443,7 +1464,7 @@ def send_orders_emails(req: EmailRequest):
         orders_dir = get_orders_dir()
 
         for car, c_orders in carrier_groups.items():
-            carrier_email = (req.email if req.email else None) or get_carrier_email(car)
+            carrier_email = (req.email if req.email else None) or get_order_carrier_email(car)
             date_str = c_orders[0].get('date') or CURRENT_ORDERS_STATE.get("date_tag") or datetime.now().strftime("%d.%m.%Y")
 
             mail = outlook.CreateItem(0)
