@@ -55,6 +55,60 @@ START_HOURS = {
     'Вс': 9
 }
 
+DELIVERY_TIMINGS = {
+    'брянск': {'transit_hours': 8, 'tz_diff': 0},
+    'волгоград': {'transit_hours': 36, 'tz_diff': 0},       # 1.5 суток
+    'воронеж': {'transit_hours': 24, 'tz_diff': 0},         # 1 сутки
+    'екатеринбург': {'transit_hours': 72, 'tz_diff': 2},    # 3 суток, +2ч
+    'иркутск': {'transit_hours': 168, 'tz_diff': 5},        # 7 суток, +5ч
+    'казань': {'transit_hours': 36, 'tz_diff': 0},          # 1.5 суток
+    'краснодар': {'transit_hours': 48, 'tz_diff': 0},       # 2 суток
+    'красноярск': {'transit_hours': 144, 'tz_diff': 4},     # 6 суток, +4ч
+    'новосибирск': {'transit_hours': 120, 'tz_diff': 3},    # 5 суток, +3ч
+    'самара': {'transit_hours': 48, 'tz_diff': 1},          # 2 суток, +1ч
+    'санкт-петербург': {'transit_hours': 24, 'tz_diff': 0}, # 1 сутки
+    'спб': {'transit_hours': 24, 'tz_diff': 0},
+    'ярославль': {'transit_hours': 5, 'tz_diff': 0},        # 5 часов
+    'хабаровск': {'transit_hours': 276, 'tz_diff': 8},      # 11.5 суток, +8ч
+    # Резервные/дополнительные направления
+    'ростов-на-дону': {'transit_hours': 48, 'tz_diff': 0},
+    'ростов': {'transit_hours': 48, 'tz_diff': 0},
+    'уфа': {'transit_hours': 48, 'tz_diff': 2},
+}
+
+def get_delivery_info(city):
+    key = str(city).strip().lower()
+    for k, v in DELIVERY_TIMINGS.items():
+        if k in key or key in k:
+            return v
+    return {'transit_hours': 24, 'tz_diff': 0}
+
+def calculate_delivery_datetime(dep_date, time_str, city):
+    """
+    Рассчитывает дату и время доставки на основе времени погрузки,
+    количества дней/часов в пути и разницы во времени.
+    """
+    if isinstance(dep_date, datetime):
+        base_dt = datetime(dep_date.year, dep_date.month, dep_date.day)
+    elif hasattr(dep_date, 'year'):
+        base_dt = datetime(dep_date.year, dep_date.month, dep_date.day)
+    else:
+        try:
+            base_dt = datetime.strptime(str(dep_date).strip(), '%d.%m.%Y')
+        except Exception:
+            base_dt = datetime.now()
+            
+    parts = [int(p) for p in str(time_str).strip().split(':') if p.isdigit()]
+    h = parts[0] if len(parts) > 0 else 9
+    m = parts[1] if len(parts) > 1 else 0
+    dep_dt = base_dt.replace(hour=h, minute=m, second=0)
+    
+    info = get_delivery_info(city)
+    total_hours = info['transit_hours'] + info['tz_diff']
+    delivery_dt = dep_dt + timedelta(hours=total_hours)
+    return delivery_dt
+
+
 def find_tariffs_file(base_dir=None):
     """Ищет файл ТАРИФЫ РК ТАБЛИЦА.xlsx в проекте, Загрузках или на Рабочем столе"""
     candidates = []
@@ -406,6 +460,8 @@ def parse_final_schedule_file(excel_path):
     Считывает готовый график отгрузок (Недельные графики.xlsx), 
     в который сотрудник мог внести ручные правки в Excel 
     (добавил/удалил машины, изменил время, перевозчика или тариф).
+    Поддерживает как новый формат (Месяц, Дата, Время, День, Направление, Номер, Перевозчик, Паллеты, Дата доставки, Тариф),
+    так и прежний формат (Дата, День, Месяц, Номер, Направление, Паллеты, Перевозчик, Тариф, Время).
     """
     wb = openpyxl.load_workbook(excel_path, data_only=True)
     all_trips = []
@@ -413,27 +469,44 @@ def parse_final_schedule_file(excel_path):
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         # Проверяем, что это дневной лист графика
-        h_c = str(ws['C1'].value or '').strip()
-        h_g = str(ws['G1'].value or '').strip()
-        if 'Дата' not in h_c and 'Направление' not in h_g:
+        h_c = str(ws['C1'].value or '').strip().lower()
+        h_d = str(ws['D1'].value or '').strip().lower()
+        h_g = str(ws['G1'].value or '').strip().lower()
+        
+        if 'месяц' not in h_c and 'дата' not in h_c and 'дата' not in h_d and 'направление' not in h_g:
             continue
             
+        is_new_format = ('месяц' in h_c) or ('время' in str(ws['E1'].value or '').lower())
+        
         for row in range(2, ws.max_row + 1):
-            date_val = ws[f'C{row}'].value
-            city_val = ws[f'G{row}'].value
-            carrier_val = ws[f'I{row}'].value
+            if is_new_format:
+                month_val = ws[f'C{row}'].value or ''
+                date_val = ws[f'D{row}'].value
+                time_val = ws[f'E{row}'].value
+                day_val = ws[f'F{row}'].value or ''
+                city_val = ws[f'G{row}'].value
+                truck_num = ws[f'H{row}'].value or 1
+                carrier_val = ws[f'I{row}'].value
+                pallets = ws[f'J{row}'].value or 33
+                deliv_val = ws[f'K{row}'].value
+                tariff_val = ws[f'L{row}'].value
+            else:
+                date_val = ws[f'C{row}'].value
+                day_val = ws[f'D{row}'].value or ''
+                month_val = ws[f'E{row}'].value or ''
+                truck_num = ws[f'F{row}'].value or 1
+                city_val = ws[f'G{row}'].value
+                pallets = ws[f'H{row}'].value or 33
+                carrier_val = ws[f'I{row}'].value
+                tariff_val = ws[f'J{row}'].value
+                time_val = ws[f'K{row}'].value
+                deliv_val = None
             
             if not city_val or str(city_val).strip() == '' or 'Итого' in str(city_val):
                 continue
             if not date_val:
                 continue
                 
-            day_val = ws[f'D{row}'].value or ''
-            month_val = ws[f'E{row}'].value or ''
-            truck_num = ws[f'F{row}'].value or 1
-            pallets = ws[f'H{row}'].value or 33
-            time_val = ws[f'K{row}'].value
-            tariff_val = ws[f'J{row}'].value
             tariff_num = 0
             if tariff_val is not None:
                 try:
@@ -459,21 +532,39 @@ def parse_final_schedule_file(excel_path):
                 if len(time_str) == 5:
                     time_str += ':00'
                     
+            city_str = str(city_val).strip()
+            if deliv_val is not None and str(deliv_val).strip():
+                if isinstance(deliv_val, datetime):
+                    delivery_dt = deliv_val
+                    delivery_str = delivery_dt.strftime('%d.%m.%Y %H:%M')
+                else:
+                    delivery_str = str(deliv_val).strip()
+                    try:
+                        delivery_dt = datetime.strptime(delivery_str, '%d.%m.%Y %H:%M')
+                    except Exception:
+                        delivery_dt = None
+            else:
+                delivery_dt = calculate_delivery_datetime(dt_obj or date_str, time_str, city_str)
+                delivery_str = delivery_dt.strftime('%d.%m.%Y %H:%M')
+                    
             all_trips.append({
                 'date': date_str,
                 'dt': dt_obj,
                 'day': str(day_val).strip(),
                 'month': str(month_val).strip(),
-                'city': str(city_val).strip(),
+                'city': city_str,
                 'truck_num': truck_num,
                 'carrier': str(carrier_val or 'ТК Сияние').strip(),
                 'pallets': pallets,
                 'tariff': tariff_num,
-                'time': time_str
+                'time': time_str,
+                'delivery_dt': delivery_dt,
+                'delivery_str': delivery_str
             })
             
     wb.close()
     return all_trips
+
 
 def build_schedule_from_plan(plan_trips, start_date, output_path):
     wb_out = openpyxl.Workbook()
@@ -514,9 +605,9 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
     fill_40p = PatternFill(start_color='E2EFDA', end_color='E2EFDA', fill_type='solid')
 
     col_widths = {
-        'A': 28, 'B': 5, 'C': 13, 'D': 6, 'E': 12, 'F': 15,
-        'G': 20, 'H': 15, 'I': 26, 'J': 15, 'K': 16, 'L': 5,
-        'M': 25, 'N': 10, 'O': 10, 'P': 16
+        'A': 28, 'B': 5, 'C': 12, 'D': 14, 'E': 16, 'F': 6,
+        'G': 18, 'H': 15, 'I': 24, 'J': 15, 'K': 18, 'L': 14,
+        'M': 5, 'N': 22, 'O': 10, 'P': 10
     }
 
     all_scheduled_trips = []
@@ -535,9 +626,9 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
         ws.row_dimensions[1].height = 26.0
 
         headers = {
-            'C': 'Дата', 'D': '', 'E': 'Месяц', 'F': 'Номер Машины',
-            'G': 'Направление', 'H': 'Кол-во паллет ', 'I': 'Перевозчик',
-            'J': 'Тариф', 'K': 'Время погрузки'
+            'C': 'Месяц', 'D': 'Дата', 'E': 'Время погрузки', 'F': '',
+            'G': 'Направление', 'H': 'Номер Машины', 'I': 'Перевозчик',
+            'J': 'Кол-во паллет ', 'K': 'Дата доставки', 'L': 'Тариф'
         }
         for col_l, h_text in headers.items():
             cell = ws[f'{col_l}1']
@@ -577,37 +668,41 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
         start_h = START_HOURS.get(d_name, 9)
         for i, tr in enumerate(ordered_trips):
             slot_h = start_h + (i // 2)
-            tr['time'] = f"{slot_h:02d}:00:00"
+            time_str = f"{slot_h:02d}:00:00"
+            tr['time'] = time_str
+            deliv_dt = calculate_delivery_datetime(tr['dt'], time_str, tr['city'])
+            tr['delivery_dt'] = deliv_dt
+            tr['delivery_str'] = deliv_dt.strftime('%d.%m.%Y %H:%M')
             all_scheduled_trips.append(tr)
 
         row_idx = 2
         for tr in ordered_trips:
             c_a = ws[f'A{row_idx}']
-            c_a.value = f'=G{row_idx}&I{row_idx}&H{row_idx}'
+            c_a.value = f'=G{row_idx}&I{row_idx}&J{row_idx}'
             c_a.font = font_key
             c_a.alignment = Alignment(horizontal='left', vertical='center')
             
             c_c = ws[f'C{row_idx}']
-            c_c.value = d_str
+            c_c.value = d_month
             c_c.font = font_regular
             c_c.alignment = Alignment(horizontal='center', vertical='center')
             c_c.border = border_thin
             
             c_d = ws[f'D{row_idx}']
-            c_d.value = d_short
-            c_d.font = font_header
+            c_d.value = d_str
+            c_d.font = font_regular
             c_d.alignment = Alignment(horizontal='center', vertical='center')
             c_d.border = border_thin
             
             c_e = ws[f'E{row_idx}']
-            c_e.value = d_month
+            c_e.value = tr['time']
             c_e.font = font_regular
             c_e.alignment = Alignment(horizontal='center', vertical='center')
             c_e.border = border_thin
             
             c_f = ws[f'F{row_idx}']
-            c_f.value = tr['truck_num']
-            c_f.font = font_bold_center
+            c_f.value = d_short
+            c_f.font = font_header
             c_f.alignment = Alignment(horizontal='center', vertical='center')
             c_f.border = border_thin
             
@@ -618,8 +713,8 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             c_g.border = border_thin
             
             c_h = ws[f'H{row_idx}']
-            c_h.value = tr['pallets']
-            c_h.font = font_regular
+            c_h.value = tr['truck_num']
+            c_h.font = font_bold_center
             c_h.alignment = Alignment(horizontal='center', vertical='center')
             c_h.border = border_thin
             
@@ -630,20 +725,26 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             c_i.border = border_thin
             
             c_j = ws[f'J{row_idx}']
-            c_j.value = tr['tariff']
+            c_j.value = tr['pallets']
             c_j.font = font_regular
-            c_j.number_format = '#,##0 ₽'
-            c_j.alignment = Alignment(horizontal='right', vertical='center')
+            c_j.alignment = Alignment(horizontal='center', vertical='center')
             c_j.border = border_thin
             
             c_k = ws[f'K{row_idx}']
-            c_k.value = tr['time']
+            c_k.value = tr['delivery_str']
             c_k.font = font_regular
             c_k.alignment = Alignment(horizontal='center', vertical='center')
             c_k.border = border_thin
             
+            c_l = ws[f'L{row_idx}']
+            c_l.value = tr['tariff']
+            c_l.font = font_regular
+            c_l.number_format = '#,##0 ₽'
+            c_l.alignment = Alignment(horizontal='right', vertical='center')
+            c_l.border = border_thin
+            
             if tr['pallets'] == 40:
-                for col_l in ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']:
+                for col_l in ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']:
                     ws[f'{col_l}{row_idx}'].fill = fill_40p
             
             ws.row_dimensions[row_idx].height = 18.0
@@ -651,70 +752,55 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
 
         last_data_row = row_idx - 1
         if last_data_row >= 2:
-            ws.auto_filter.ref = f'C1:K{last_data_row}'
+            ws.auto_filter.ref = f'C1:L{last_data_row}'
 
         carrier_counts = Counter([t['carrier'] for t in ordered_trips if t.get('carrier')])
         if carrier_counts:
-            ws['M3'] = 'Перевозчик'
-            ws['M3'].font = font_header
-            ws['M3'].border = border_summary_header
-            ws['N3'] = 'Рейсы'
+            ws['N3'] = 'Перевозчик'
             ws['N3'].font = font_header
-            ws['N3'].alignment = Alignment(horizontal='center')
             ws['N3'].border = border_summary_header
-            ws['O3'] = '%'
+            ws['O3'] = 'Рейсы'
             ws['O3'].font = font_header
             ws['O3'].alignment = Alignment(horizontal='center')
             ws['O3'].border = border_summary_header
-            ws['P3'] = 'Сумма, ₽'
+            ws['P3'] = '%'
             ws['P3'].font = font_header
-            ws['P3'].alignment = Alignment(horizontal='right')
+            ws['P3'].alignment = Alignment(horizontal='center')
             ws['P3'].border = border_summary_header
             
             s_row = 4
             for car, cnt in carrier_counts.most_common():
-                ws[f'M{s_row}'] = car
-                ws[f'M{s_row}'].font = font_regular
-                ws[f'M{s_row}'].border = border_thin
-                
-                ws[f'N{s_row}'] = cnt
+                ws[f'N{s_row}'] = car
                 ws[f'N{s_row}'].font = font_regular
-                ws[f'N{s_row}'].alignment = Alignment(horizontal='center')
                 ws[f'N{s_row}'].border = border_thin
                 
-                total_target_row = 4 + len(carrier_counts)
-                ws[f'O{s_row}'] = f'=N{s_row}/N{total_target_row}'
+                ws[f'O{s_row}'] = cnt
                 ws[f'O{s_row}'].font = font_regular
-                ws[f'O{s_row}'].number_format = '0.0%'
-                ws[f'O{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'O{s_row}'].alignment = Alignment(horizontal='center')
                 ws[f'O{s_row}'].border = border_thin
-
-                ws[f'P{s_row}'] = f'=SUMIF(I2:I{last_data_row}, M{s_row}, J2:J{last_data_row})'
+                
+                total_target_row = 4 + len(carrier_counts)
+                ws[f'P{s_row}'] = f'=O{s_row}/O{total_target_row}'
                 ws[f'P{s_row}'].font = font_regular
-                ws[f'P{s_row}'].number_format = '#,##0 ₽'
+                ws[f'P{s_row}'].number_format = '0.0%'
                 ws[f'P{s_row}'].alignment = Alignment(horizontal='right')
                 ws[f'P{s_row}'].border = border_thin
                 s_row += 1
                 
-            ws[f'M{s_row}'] = 'Всего'
-            ws[f'M{s_row}'].font = font_header
-            ws[f'M{s_row}'].border = border_total
-            
-            ws[f'N{s_row}'] = f'=SUM(N4:N{s_row-1})'
+            ws[f'N{s_row}'] = 'Всего'
             ws[f'N{s_row}'].font = font_header
-            ws[f'N{s_row}'].alignment = Alignment(horizontal='center')
             ws[f'N{s_row}'].border = border_total
             
-            ws[f'O{s_row}'] = '100%'
+            ws[f'O{s_row}'] = f'=SUM(O4:O{s_row-1})'
             ws[f'O{s_row}'].font = font_header
-            ws[f'O{s_row}'].alignment = Alignment(horizontal='right')
+            ws[f'O{s_row}'].alignment = Alignment(horizontal='center')
             ws[f'O{s_row}'].border = border_total
-
-            ws[f'P{s_row}'] = f'=SUM(P4:P{s_row-1})'
+            
+            ws[f'P{s_row}'] = '100%'
             ws[f'P{s_row}'].font = font_header
-            ws[f'P{s_row}'].number_format = '#,##0 ₽'
             ws[f'P{s_row}'].alignment = Alignment(horizontal='right')
             ws[f'P{s_row}'].border = border_total
+
 
     wb_out.save(output_path)
     print(f"Таблица успешно создана: {output_path}")
@@ -725,6 +811,7 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
     rows_html = ""
     for tr in trips:
         bg_color = "#e2efda" if tr['pallets'] == 40 else "#ffffff"
+        deliv_str = tr.get('delivery_str') or ''
         rows_html += f"""
         <tr style="background-color: {bg_color}; text-align: center;">
             <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['date']}</td>
@@ -733,6 +820,7 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
             <td style="padding: 8px; border: 1px solid #d9d9d9; text-align: left; font-weight: bold;">{tr['city']}</td>
             <td style="padding: 8px; border: 1px solid #d9d9d9;">№ {tr['truck_num']}</td>
             <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['pallets']} пал.</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold; color: #1f4e79;">{deliv_str}</td>
         </tr>
         """
         
@@ -743,7 +831,7 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
         <meta charset="utf-8">
         <style>
             body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333333; }}
-            table {{ border-collapse: collapse; width: 100%; max-width: 650px; margin-top: 15px; margin-bottom: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; max-width: 720px; margin-top: 15px; margin-bottom: 20px; }}
             th {{ background-color: #2f5597; color: #ffffff; padding: 10px; border: 1px solid #2f5597; text-align: center; }}
             .notice {{ background-color: #fff2cc; border-left: 4px solid #d6b656; padding: 12px; margin: 15px 0; font-size: 13px; }}
             .footer {{ font-size: 12px; color: #7f7f7f; margin-top: 25px; border-top: 1px solid #e0e0e0; padding-top: 10px; }}
@@ -756,12 +844,13 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
         <table>
             <thead>
                 <tr>
-                    <th>Дата</th>
+                    <th>Дата погрузки</th>
                     <th>День</th>
-                    <th>Время погрузки</th>
+                    <th>Время</th>
                     <th>Направление</th>
                     <th>№ ТС</th>
                     <th>Паллеты</th>
+                    <th>Дата доставки</th>
                 </tr>
             </thead>
             <tbody>
@@ -875,7 +964,9 @@ def preview_emails_console(all_trips, target_email):
         print(f"[КОМУ]: {target_email} (в боевом режиме: диспетчер {carrier})")
         print(f"Рейсы перевозчика ({len(c_trips)} шт.):")
         for tr in c_trips:
-            print(f"  • {tr['date']} ({tr['day']}) в {tr['time'][:5]} -> {tr['city']:15s} (ТС #{tr['truck_num']}, {tr['pallets']} пал.)")
+            deliv_info = f" -> Доставка: {tr.get('delivery_str')}" if tr.get('delivery_str') else ""
+            print(f"  • {tr['date']} ({tr['day']}) в {tr['time'][:5]} -> {tr['city']:15s} (ТС #{tr['truck_num']}, {tr['pallets']} пал.){deliv_info}")
+
 
 def get_schedules_dir():
     """
