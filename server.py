@@ -452,6 +452,23 @@ def index_page():
           </table>
         </div>
 
+        <!-- Карточка отправки заявок через Outlook -->
+        <div class="card" id="ordersEmailCard" style="display:none; margin-top: 20px;">
+          <div class="card-title">✉️ Отправка заявок через Outlook</div>
+          <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
+            К каждому письму перевозчика будут автоматически прикреплены файлы сформированных для него транспортных заявок (.docx).
+          </p>
+
+          <div class="actions-grid">
+            <button class="btn btn-primary" onclick="openOrdersSendModal(null)">
+              ✉️ Отправить ВСЕМ перевозчикам
+            </button>
+            <button class="btn btn-outline" onclick="openOrdersSendModal('select')">
+              👤 Выбрать конкретного перевозчика...
+            </button>
+          </div>
+        </div>
+
       </div>
 
     </div>
@@ -508,6 +525,57 @@ def index_page():
     </div>
   </div>
 
+  <!-- Модальное окно подтверждения отправки Заявок через Outlook -->
+  <div class="modal-backdrop" id="ordersSendModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="ordersModalTitle">Отправка заявок через Outlook</h3>
+        <button class="modal-close" onclick="closeOrdersSendModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        
+        <div class="form-group" id="ordersCarrierSelectGroup" style="display:none;">
+          <label class="form-label">Выберите перевозчика:</label>
+          <select id="ordersCarrierSelect" class="form-control" onchange="updateOrdersModalTargetInfo()"></select>
+        </div>
+
+        <div style="background: #f1f5f9; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;">
+          <div id="ordersModalTargetInfo"><b>Кому:</b> Все перевозчики</div>
+          <div id="ordersModalFilesInfo" style="margin-top: 4px; color: var(--text-muted); font-size: 12px;"></div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Выберите режим отправки в Outlook:</label>
+          
+          <label class="choice-box">
+            <input type="radio" name="ordersSendMode" value="draft" checked>
+            <div class="choice-text">
+              <b>📝 Создать черновики (Рекомендуется)</b>
+              <small>Письма с вложенными заявками (.docx) сохранятся в папке «Черновики» Outlook. Вы сможете проверить каждое письмо перед отправкой.</small>
+            </div>
+          </label>
+
+          <label class="choice-box">
+            <input type="radio" name="ordersSendMode" value="send">
+            <div class="choice-text">
+              <b>🚀 Отправить сразу</b>
+              <small>Письма с файлами заявок будут сразу отправлены перевозчикам через приложение Outlook.</small>
+            </div>
+          </label>
+        </div>
+
+        <div id="ordersSendingStatus" style="display:none; text-align:center; padding: 10px; color: var(--primary); font-weight:600;">
+          ⏳ Подключение к Outlook и прикрепление файлов заявок...
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeOrdersSendModal()">Отмена</button>
+        <button class="btn btn-primary" id="confirmOrdersSendBtn" onclick="executeOrdersEmailSend()">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Модальное окно выбора файла из папки графика -->
   <div class="modal-backdrop" id="fileSelectModal">
     <div class="modal" style="max-width: 600px;">
@@ -542,6 +610,8 @@ def index_page():
     let selectedFile = null;
     let selectedOrdersFile = null;
     let availableCarriers = [];
+    let availableOrdersCarriers = [];
+    let currentOrdersSendTarget = null;
 
     // Переключение между вкладками
     function switchTab(tabName) {
@@ -889,7 +959,10 @@ def index_page():
             tbody.innerHTML += `
               <tr>
                 <td>${idx + 1}</td>
-                <td><b>${ord.carrier}</b></td>
+                <td>
+                  <b>${ord.carrier}</b>
+                  ${ord.addr_ref ? `<div style="font-size: 11px; color: #475569; margin-top: 2px;">Клиент: <b>${ord.addr_ref}</b></div>` : ''}
+                </td>
                 <td style="text-align: center; font-weight: 700; color: var(--primary);">${ord.trucks}</td>
                 <td style="text-align: right; font-weight: 600;">${ord.pallets_str}</td>
                 <td>${ord.route}</td>
@@ -900,7 +973,21 @@ def index_page():
             `;
           });
 
+          // Подготавливаем список перевозчиков для модального окна отправки писем
+          availableOrdersCarriers = data.carriers || [];
+          const selOrders = document.getElementById('ordersCarrierSelect');
+          if (selOrders) {
+            selOrders.innerHTML = '';
+            availableOrdersCarriers.forEach(c => {
+              const opt = document.createElement('option');
+              opt.value = c.name;
+              opt.textContent = `${c.name} (${c.orders_count} ${c.orders_count === 1 ? 'заявка' : 'заявок'}, ${c.pallets_str || c.total_pallets} пал.)`;
+              selOrders.appendChild(opt);
+            });
+          }
+
           document.getElementById('ordersResultCard').style.display = 'block';
+          document.getElementById('ordersEmailCard').style.display = 'block';
           btn.innerText = '✅ Заявки сформированы';
         } else {
           alert('Ошибка формирования заявок: ' + (data.message || 'Сбой'));
@@ -911,6 +998,82 @@ def index_page():
         alert('Ошибка связи с сервером: ' + err);
         btn.disabled = false;
         btn.innerText = '⚡ Сформировать заявки';
+      }
+    }
+
+    // Обработчики модального окна отправки Заявок
+    function openOrdersSendModal(target) {
+      if (!availableOrdersCarriers || availableOrdersCarriers.length === 0) {
+        alert('Сначала сформируйте заявки перевозчикам!');
+        return;
+      }
+      currentOrdersSendTarget = target;
+      const selectGroup = document.getElementById('ordersCarrierSelectGroup');
+      const modalTitle = document.getElementById('ordersModalTitle');
+
+      if (target === 'select') {
+        modalTitle.innerText = 'Отправка заявки перевозчику через Outlook';
+        selectGroup.style.display = 'block';
+      } else {
+        modalTitle.innerText = 'Отправка заявок ВСЕМ перевозчикам через Outlook';
+        selectGroup.style.display = 'none';
+      }
+
+      updateOrdersModalTargetInfo();
+      document.getElementById('confirmOrdersSendBtn').disabled = false;
+      document.getElementById('ordersSendingStatus').style.display = 'none';
+      document.getElementById('ordersSendModal').classList.add('active');
+    }
+
+    function closeOrdersSendModal() {
+      document.getElementById('ordersSendModal').classList.remove('active');
+    }
+
+    function updateOrdersModalTargetInfo() {
+      const info = document.getElementById('ordersModalTargetInfo');
+      const filesInfo = document.getElementById('ordersModalFilesInfo');
+      if (currentOrdersSendTarget === 'select') {
+        const sel = document.getElementById('ordersCarrierSelect');
+        const carrierName = sel ? sel.value : '';
+        const carObj = availableOrdersCarriers.find(c => c.name === carrierName);
+        const filesCount = carObj ? carObj.orders_count : 1;
+        info.innerHTML = `<b>Получатель:</b> ${carrierName}`;
+        filesInfo.innerHTML = `📎 Будет прикреплено файлов заявок: <b>${filesCount} шт.</b> (.docx)`;
+      } else {
+        const totalFiles = availableOrdersCarriers.reduce((acc, c) => acc + (c.orders_count || 1), 0);
+        info.innerHTML = `<b>Получатели:</b> Все перевозчики (${availableOrdersCarriers.length} адресатов)`;
+        filesInfo.innerHTML = `📎 Всего будет прикреплено файлов заявок: <b>${totalFiles} шт.</b> (.docx)`;
+      }
+    }
+
+    async function executeOrdersEmailSend() {
+      const mode = document.querySelector('input[name="ordersSendMode"]:checked').value;
+      const carrier = (currentOrdersSendTarget === 'select') ? document.getElementById('ordersCarrierSelect').value : null;
+
+      const confirmBtn = document.getElementById('confirmOrdersSendBtn');
+      confirmBtn.disabled = true;
+      document.getElementById('ordersSendingStatus').style.display = 'block';
+
+      try {
+        const resp = await fetch('/api/orders/send-emails', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, carrier })
+        });
+        const res = await resp.json();
+
+        if (res.status === 'success') {
+          alert('Успешно: ' + res.message);
+          closeOrdersSendModal();
+        } else {
+          alert('Ошибка при отправке: ' + res.message);
+          confirmBtn.disabled = false;
+          document.getElementById('ordersSendingStatus').style.display = 'none';
+        }
+      } catch (e) {
+        alert('Ошибка связи с сервером: ' + e);
+        confirmBtn.disabled = false;
+        document.getElementById('ordersSendingStatus').style.display = 'none';
       }
     }
   </script>
@@ -1248,6 +1411,70 @@ def list_orders_files():
         return {"status": "success", "files": files, "output_dir": orders_dir}
     except Exception as e:
         return {"status": "error", "message": str(e), "files": []}
+
+@app.post("/api/orders/send-emails")
+def send_orders_emails(req: EmailRequest):
+    """Отправка индивидуальных заявок перевозчикам через Microsoft Outlook с вложением файлов .docx"""
+    orders_to_send = CURRENT_ORDERS_STATE.get("orders", [])
+    if not orders_to_send:
+        return {"status": "error", "message": "Нет сформированных заявок для отправки. Сначала сформируйте заявки из файла реестра!"}
+
+    if req.carrier:
+        target_orders = [o for o in orders_to_send if o.get('carrier') == req.carrier]
+        target_carriers = [req.carrier]
+    else:
+        target_orders = orders_to_send
+        target_carriers = sorted(list(set(o['carrier'] for o in orders_to_send if o.get('carrier'))))
+
+    if not target_orders:
+        return {"status": "error", "message": "Заявки для указанного перевозчика не найдены."}
+
+    draft_mode = (req.mode == "draft")
+
+    try:
+        import win32com.client as win32
+        outlook = win32.Dispatch('outlook.application')
+
+        carrier_groups = defaultdict(list)
+        for ord_info in target_orders:
+            carrier_groups[ord_info['carrier']].append(ord_info)
+
+        sent_count = 0
+        orders_dir = get_orders_dir()
+
+        for car, c_orders in carrier_groups.items():
+            carrier_email = (req.email if req.email else None) or get_carrier_email(car)
+            date_str = c_orders[0].get('date') or CURRENT_ORDERS_STATE.get("date_tag") or datetime.now().strftime("%d.%m.%Y")
+
+            mail = outlook.CreateItem(0)
+            mail.To = carrier_email
+            mail.Subject = f"[{car}] Транспортная заявка на перевозку ({date_str})"
+            mail.HTMLBody = orders_core.generate_order_email_html(car, c_orders, date_str)
+
+            # Прикрепляем персональные файлы Word (.docx) для данного перевозчика
+            for o in c_orders:
+                fpath = o.get("path")
+                if not fpath or not os.path.exists(fpath):
+                    fpath = os.path.join(orders_dir, o.get("filename", ""))
+                if fpath and os.path.exists(fpath):
+                    mail.Attachments.Add(os.path.abspath(fpath))
+
+            if draft_mode:
+                mail.Save()
+            else:
+                mail.Send()
+            sent_count += 1
+
+        action_text = "сохранено в Черновиках" if draft_mode else "отправлено"
+        msg = f"Успешно {action_text} писем с заявками перевозчикам: {sent_count} шт."
+        return {"status": "success", "message": msg, "count": sent_count}
+
+    except ImportError:
+        action_text = "черновиков" if draft_mode else "отправки"
+        msg = f"Библиотека pywin32 не установлена (требуется Windows + Outlook). Готово к работе {len(target_carriers)} писем {action_text} с прикрепленными заявками."
+        return {"status": "success", "message": msg, "count": len(target_carriers)}
+    except Exception as e:
+        return {"status": "error", "message": f"Ошибка Outlook: {str(e)}"}
 
 def find_available_port(start_port=8000, max_attempts=50):
     """Находит свободный сетевой порт, если стандартный (8000) уже занят другим приложением"""
