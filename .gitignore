@@ -3,7 +3,12 @@
 *.xlsm
 *.xls
 !ТАРИФЫ РК ТАБЛИЦА.xlsx
+!База перевозчиков.xlsx
+!Книга4.xlsx
 готовые_графики/
+Готовые недельные графики/
+Заявки/
+*.zip
 output/
 
 # Python cache & environments

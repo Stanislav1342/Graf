@@ -871,10 +871,46 @@ def preview_emails_console(all_trips, target_email):
         for tr in c_trips:
             print(f"  • {tr['date']} ({tr['day']}) в {tr['time'][:5]} -> {tr['city']:15s} (ТС #{tr['truck_num']}, {tr['pallets']} пал.)")
 
+def get_schedules_dir():
+    """
+    Возвращает путь к папке 'Готовые недельные графики'.
+    Приоритет: корпоративный сетевой/облачный диск L:
+    L:\\ОТДЕЛЫ\\ТРАНСПОРТНЫЙ ОТДЕЛ\\Рожков\\РК недельные графики + заявки\\Готовые недельные графики
+    Резерв: Рабочий стол / Готовые недельные графики
+    """
+    network_base = r"L:\ОТДЕЛЫ\ТРАНСПОРТНЫЙ ОТДЕЛ\Рожков\РК недельные графики + заявки\Готовые недельные графики"
+    try:
+        drive = os.path.splitdrive(network_base)[0]
+        if drive and os.path.exists(drive + "\\"):
+            os.makedirs(network_base, exist_ok=True)
+            return network_base
+        elif os.path.exists(network_base):
+            return network_base
+    except Exception:
+        pass
+
+    user_home = os.path.expanduser("~")
+    desktop_candidates = [
+        os.path.join(user_home, "OneDrive", "Рабочий стол"),
+        os.path.join(user_home, "OneDrive", "Desktop"),
+        os.path.join(user_home, "Рабочий стол"),
+        os.path.join(user_home, "Desktop"),
+    ]
+    for d in desktop_candidates:
+        if os.path.exists(d):
+            folder = os.path.join(d, "Готовые недельные графики")
+            os.makedirs(folder, exist_ok=True)
+            return folder
+
+    fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Готовые недельные графики")
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+
 if __name__ == '__main__':
     base_dir = os.path.dirname(os.path.abspath(__file__))
     default_plan = find_default_plan_file(base_dir)
-    default_out = os.path.join(base_dir, 'Недельные графики (готовый).xlsx')
+    schedules_dir = get_schedules_dir()
+    default_out = os.path.join(schedules_dir, 'Недельные графики (готовый).xlsx')
     
     parser = argparse.ArgumentParser(description='Генератор графика отгрузок из плана .xlsm и отправка в Outlook')
     parser.add_argument('--plan', default=default_plan, help='Путь к файлу График_отгрузки_филиалов_неделя_2.xlsm')
