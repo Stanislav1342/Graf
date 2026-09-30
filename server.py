@@ -380,18 +380,11 @@ def index_page():
       
       <div class="card">
         <div class="card-title">📝 Формирование транспортных заявок</div>
-        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px; line-height: 1.5;">
-          Загрузите суточный реестр отгрузок (например, <b>Книга4.xlsx</b>). Сервис автоматически:
-          <br>1) Сопоставит водителей со справочником перевозчиков (<b>База перевозчиков.xlsx</b>, лист <i>Лист_1</i>);
-          <br>2) Сложит паллеты для одинаковых адресов погрузки у каждого перевозчика (без дублей);
-          <br>3) Заполнит официальный Word-бланк (<b>Шаблон.docx</b>) для каждого перевозчика;
-          <br>4) Сохранит файлы в папку <b>Заявки</b> и сформирует общий ZIP-архив.
-        </p>
 
         <div class="dropzone" id="ordersDropzone" onclick="document.getElementById('ordersFileInput').click()">
           <div class="dropzone-icon">📋</div>
           <div class="dropzone-text" id="ordersDropzoneText">Нажмите или перетащите сюда суточный реестр отгрузок (.xlsx)</div>
-          <div class="dropzone-subtext">Файл со столбцами: Адрес ссылка, Адрес, Количество паллет, Режим термоперевозки, Дата отгрузки, Водитель, ТС</div>
+          <div class="dropzone-subtext">Файл со столбцами: Адрес ссылка, Адрес, Количество паллет, Режим термоперевозки, Дата отгрузки, Перевозчик</div>
         </div>
         <input type="file" id="ordersFileInput" accept=".xlsx,.xlsm" style="display:none" onchange="handleOrdersFileSelected(event)">
 
@@ -429,14 +422,14 @@ def index_page():
           </div>
         </div>
 
-        <!-- Кнопки быстрых действий -->
-        <div style="display: flex; gap: 12px; margin: 15px 0; flex-wrap: wrap;">
-          <a class="btn btn-primary" id="downloadZipBtn" href="#" target="_blank" style="padding: 10px 18px;">
-            📥 Скачать все заявки архивом (ZIP)
-          </a>
-          <a class="btn btn-outline" id="downloadExcelBtn" href="#" target="_blank" style="padding: 10px 18px; background: #fff;">
-            📊 Скачать сводный реестр (Excel)
-          </a>
+        <!-- Уведомление о сохранении в сетевую папку -->
+        <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 14px 18px; margin: 15px 0;">
+          <div style="font-size: 14px; font-weight: 700; color: #166534; display: flex; align-items: center; gap: 8px;">
+            ✅ Все файлы заявок успешно сформированы и сохранены
+          </div>
+          <div style="font-size: 12px; color: #1e293b; margin-top: 4px;" id="ordersSavedFolderLabel">
+            Папка: <b>L:\\ОТДЕЛЫ\\ТРАНСПОРТНЫЙ ОТДЕЛ\\Рожков\\РК недельные графики + заявки\\Заявки</b>
+          </div>
         </div>
 
         <!-- Таблица сформированных заявок -->
@@ -446,11 +439,12 @@ def index_page():
               <tr>
                 <th style="width: 40px;">#</th>
                 <th>Перевозчик</th>
-                <th style="text-align: right;">Паллеты</th>
-                <th style="text-align: center;">Режим</th>
-                <th style="text-align: center;">Точек</th>
+                <th style="text-align: center; width: 75px;">Машин</th>
+                <th style="text-align: right; width: 85px;">Паллеты</th>
+                <th>Маршрут</th>
+                <th style="text-align: center; width: 95px;">Режим</th>
                 <th>Файл заявки (.docx)</th>
-                <th style="text-align: center; width: 100px;">Скачать</th>
+                <th style="text-align: center; width: 110px;">Статус</th>
               </tr>
             </thead>
             <tbody id="ordersTableBody">
@@ -883,25 +877,25 @@ def index_page():
           document.getElementById('statOrdersDate').innerText = data.date_tag;
           document.getElementById('statOrdersDocsCount').innerText = data.orders.length + ' Word + 1 Excel';
 
-          document.getElementById('downloadZipBtn').href = `/api/orders/download-file?filename=${encodeURIComponent(data.zip_file)}`;
-          document.getElementById('downloadExcelBtn').href = `/api/orders/download-file?filename=${encodeURIComponent(data.summary_excel)}`;
+          const savedFolder = document.getElementById('ordersSavedFolderLabel');
+          if (savedFolder && data.output_dir) {
+            savedFolder.innerHTML = 'Папка: <b>' + data.output_dir + '</b>';
+          }
 
           const tbody = document.getElementById('ordersTableBody');
           tbody.innerHTML = '';
 
           data.orders.forEach((ord, idx) => {
-            const dlUrl = `/api/orders/download-file?filename=${encodeURIComponent(ord.filename)}`;
             tbody.innerHTML += `
               <tr>
                 <td>${idx + 1}</td>
                 <td><b>${ord.carrier}</b></td>
-                <td style="text-align: right; font-weight: 600; color: var(--primary);">${ord.pallets_str}</td>
+                <td style="text-align: center; font-weight: 700; color: var(--primary);">${ord.trucks}</td>
+                <td style="text-align: right; font-weight: 600;">${ord.pallets_str}</td>
+                <td>${ord.route}</td>
                 <td style="text-align: center;"><span style="background: #e0f2fe; color: #0369a1; padding: 2px 6px; border-radius: 4px; font-size: 11px;">${ord.temp}</span></td>
-                <td style="text-align: center;">${ord.items_count}</td>
                 <td>📄 ${ord.filename}</td>
-                <td style="text-align: center;">
-                  <a href="${dlUrl}" class="btn btn-outline btn-sm" download>Скачать</a>
-                </td>
+                <td style="text-align: center;"><span style="color: #166534; font-weight: 600; font-size: 12px;">✅ Сохранен</span></td>
               </tr>
             `;
           });
@@ -1211,7 +1205,6 @@ async def generate_orders_api(file: UploadFile = File(...)):
 
         res = orders_core.process_daily_orders(
             input_excel_path=temp_path,
-            carriers_db_path=os.path.join(BASE_DIR, "База перевозчиков.xlsx"),
             template_docx_path=os.path.join(BASE_DIR, "Шаблон.docx"),
             output_dir=get_orders_dir()
         )

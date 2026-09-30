@@ -4,14 +4,16 @@
 generate_orders.py — Модуль формирования транспортных заявок для перевозчиков.
 
 Логика:
-1. Загрузка исходного реестра (например, Книга4.xlsx).
-2. Определение перевозчика по водителю из База перевозчиков.xlsx (лист 'Лист_1').
-3. Суммирование паллет для одинаковых 'Адрес ссылка' у одного перевозчика.
-4. Создание сводной таблицы Excel с добавленной колонкой 'Перевозчик' и объединенными паллетами.
+1. Загрузка исходного реестра со столбцами:
+   Адрес ссылка, Адрес, Количество паллет, Режим термоперевозки, Дата отгрузки, Перевозчик.
+2. Суммирование паллет для одинаковых 'Адрес ссылка' у одного перевозчика.
+3. Расчет количества требуемых транспортных средств (до 33 паллет = 1 машина, 34-66 = 2 машины и т.д.).
+4. Формирование строки Маршрут: <город/деревня погрузки> – д. Черная Грязь.
 5. Заполнение Word-шаблона 'Шаблон.docx' для каждого перевозчика:
    - Кому: Перевозчик
    - Дата: текущая дата (например, 30 сентября 2026)
-   - Тип транспортного средства: сумма паллет, РЕФ и температурный режим
+   - Маршрут: <город/деревня> – д. Черная Грязь
+   - Тип транспортного средства: <N> х <кол-во> паллет, РЕФ <режим>
    - Адрес погрузки: Адрес ссылка, Адрес
    - Дата и время погрузки: Дата отгрузки к 9:00
    - Дата и время выгрузки: Дата отгрузки, по прибытию
@@ -23,8 +25,8 @@ generate_orders.py — Модуль формирования транспорт�
 import os
 import sys
 import re
+import math
 import datetime
-import zipfile
 from collections import defaultdict
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -42,7 +44,7 @@ RUSSIAN_MONTHS = [
 def get_orders_dir():
     """
     Возвращает путь к целевой папке 'Заявки'.
-    Приоритет: сетевой диск L:
+    Приоритет: сетевой/облачный диск L:
     L:\\ОТДЕЛЫ\\ТРАНСПОРТНЫЙ ОТДЕЛ\\Рожков\\РК недельные графики + заявки\\Заявки
     Резерв: Рабочий стол / Заявки или локальная папка.
     """
@@ -97,47 +99,84 @@ def get_russian_date_str(dt: datetime.date = None) -> str:
     month_name = RUSSIAN_MONTHS[dt.month - 1]
     return f"{dt.day} {month_name} {dt.year}"
 
-def load_drivers_database(db_path: str = None) -> dict:
+def extract_settlement(addr: str) -> str:
     """
-    Загружает базу перевозчиков из База перевозчиков.xlsx (лист Лист_1).
-    Возвращает словарь { 'ФИО Водителя': 'Перевозчик' }.
-    При наличии дубликатов выбирается перевозчик с наибольшим числом записей (мода).
+    Извлекает название города / деревни / села / пгт из полного адреса для строки 'Маршрут:'.
+    Примеры:
+    - 'Московская обл, Истринский р-н, Лешково с, д. стр.244...' -> 'Лешково'
+    - '143500, Московская область, ..., деревня Давыдовское, ...' -> 'д. Давыдовское'
+    - '141400 Московская область, г. Химки, ...' -> 'г. Химки'
+    - '143080, Московская область, ..., пгт. Лесной Городок, ...' -> 'пгт. Лесной Городок'
+    - '142153, Московская область, ..., д Новоселки, ...' -> 'д. Новоселки'
     """
-    if db_path is None:
-        db_path = os.path.join(BASE_DIR, "База перевозчиков.xlsx")
+    if not addr:
+        return ""
 
-    if not os.path.exists(db_path):
-        raise FileNotFoundError(f"Файл базы перевозчиков не найден: {db_path}")
+    # 1. Поиск деревни: 'деревня Название' или 'д. Название' или 'д Название'
+    # Исключаем сокращения типа 'д. 10' (дом)
+    m = re.search(r'\bдеревня\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
+    if m:
+        return f"д. {m.group(1).strip()}"
 
-    wb = openpyxl.load_workbook(db_path, data_only=True)
-    ws = wb["Лист_1"] if "Лист_1" in wb.sheetnames else wb.active
+    m = re.search(r'(?:^|[\s,])д\.?\s+([А-Яа-яЁё\-]+)(?!\s*\d)', addr, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip()
+        if val.lower() not in ('стр', 'корп', 'влд', 'к'):
+            return f"д. {val}"
 
-    driver_counts = defaultdict(lambda: defaultdict(int))
-    for row in ws.iter_rows(values_only=True):
-        if not row or len(row) < 2:
-            continue
-        driver_val = row[0]
-        carrier_val = row[1]
-        if not driver_val or not carrier_val:
-            continue
-        driver_clean = re.sub(r'\s+', ' ', str(driver_val)).strip()
-        carrier_clean = re.sub(r'\s+', ' ', str(carrier_val)).strip()
-        if driver_clean.lower() == "водитель" or carrier_clean.lower() == "перевозчик":
-            continue
-        driver_counts[driver_clean][carrier_clean] += 1
+    # 2. Поиск пгт / поселка
+    m = re.search(r'\bпгт\.?\s+([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
+    if m:
+        return f"пгт. {m.group(1).strip()}"
+    m = re.search(r'\bпос(?:елок|\.)?\s+([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
+    if m:
+        return f"пос. {m.group(1).strip()}"
 
-    driver_to_carrier = {}
-    for driver, counts in driver_counts.items():
-        # Выбираем перевозчика с максимальным числом совпадений
-        best_carrier = max(counts.items(), key=lambda x: x[1])[0]
-        driver_to_carrier[driver] = best_carrier
+    # 3. Поиск села: 'Лешково с' или 'с. Лешково' или 'село Лешково'
+    m = re.search(r'\bсело\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
+    if m:
+        return f"{m.group(1).strip()}"
+    m = re.search(r'\b([А-Яа-яЁё\-]+)\s+с\b', addr, re.IGNORECASE)
+    if m:
+        return f"{m.group(1).strip()}"
+    m = re.search(r'(?:^|[\s,])с\.?\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
+    if m:
+        return f"{m.group(1).strip()}"
 
-    return driver_to_carrier
+    # 4. Поиск города: 'г. Химки', 'г Пушкино', 'г. Домодедово', 'Санкт-Петербург г', 'Домодедово г'
+    # Исключаем 'г.о.' (городской округ)
+    m = re.search(r'(?:^|[\s,])г\.(?!о\b)\s*([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip()
+        if not val.lower().startswith('о '):
+            return f"г. {val}"
 
-def parse_orders_excel(input_path: str, driver_to_carrier: dict) -> list:
+    m = re.search(r'(?:^|[\s,])г\s+([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip()
+        if val.lower() not in ('о', 'о.'):
+            return f"г. {val}"
+
+    m = re.search(r'\b([А-Яа-яЁё\-]+)\s+г\b', addr, re.IGNORECASE)
+    if m:
+        return f"г. {m.group(1).strip()}"
+
+    # 5. Поиск городского округа: 'г.о. Подольск' -> 'г. Подольск'
+    m = re.search(r'\bг\.?о\.?\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
+    if m:
+        return f"г. {m.group(1).strip()}"
+
+    # Если не удалось распознать спецпрефикс, берем первую осмысленную часть адреса
+    parts = [p.strip() for p in addr.split(',') if p.strip()]
+    for p in parts:
+        if not re.match(r'^\d+$', p) and 'область' not in p.lower() and 'обл' not in p.lower():
+            return p
+    return addr
+
+def parse_orders_excel(input_path: str) -> list:
     """
-    Читает строки из суточного файла отгрузок (Книга4.xlsx),
-    сопоставляет водителей с перевозчиками и нормализует типы данных.
+    Считывает строки из файла отгрузок.
+    Колонка 'Перевозчик' берется напрямую из файла.
     """
     wb = openpyxl.load_workbook(input_path, data_only=True)
     ws = wb.active
@@ -159,35 +198,29 @@ def parse_orders_excel(input_path: str, driver_to_carrier: dict) -> list:
     idx_pal = find_idx(["паллет", "кол-во", "количество"])
     idx_temp = find_idx(["режим", "термо"])
     idx_date = find_idx(["дата отгрузки", "дата"])
-    idx_driver = find_idx(["водитель", "фио"])
-    idx_tc = find_idx(["тс", "машина", "автомобиль"])
+    idx_carrier = find_idx(["перевозчик", "подрядчик", "компания"])
+
+    # Если колонка перевозчика не найдена по имени, но колонок 6, берем последнюю
+    if idx_carrier == -1 and len(header) >= 6:
+        idx_carrier = 5
 
     raw_items = []
     for r in rows[1:]:
         if not any(r):
             continue
 
-        driver_raw = str(r[idx_driver]).strip() if idx_driver >= 0 and r[idx_driver] else ""
-        driver_clean = re.sub(r'\s+', ' ', driver_raw).strip()
-
-        carrier = driver_to_carrier.get(driver_clean)
-        if not carrier:
-            # Попробуем нестрогий поиск без учета регистра
-            for d_name, c_name in driver_to_carrier.items():
-                if d_name.lower() == driver_clean.lower():
-                    carrier = c_name
-                    break
-        if not carrier:
-            carrier = "Неизвестный перевозчик"
+        carrier_val = str(r[idx_carrier]).strip() if idx_carrier >= 0 and len(r) > idx_carrier and r[idx_carrier] else ""
+        if not carrier_val:
+            carrier_val = "Неизвестный перевозчик"
 
         pal_val = 0.0
-        if idx_pal >= 0 and r[idx_pal] is not None:
+        if idx_pal >= 0 and len(r) > idx_pal and r[idx_pal] is not None:
             try:
                 pal_val = float(r[idx_pal])
             except (ValueError, TypeError):
                 pal_val = 0.0
 
-        date_val = r[idx_date] if idx_date >= 0 else None
+        date_val = r[idx_date] if idx_date >= 0 and len(r) > idx_date else None
         if isinstance(date_val, (datetime.date, datetime.datetime)):
             date_str = date_val.strftime("%d.%m.%Y")
         elif date_val:
@@ -195,15 +228,15 @@ def parse_orders_excel(input_path: str, driver_to_carrier: dict) -> list:
         else:
             date_str = datetime.date.today().strftime("%d.%m.%Y")
 
+        addr_str = str(r[idx_addr]).strip() if idx_addr >= 0 and len(r) > idx_addr and r[idx_addr] else ""
+
         item = {
-            "addr_ref": str(r[idx_ref]).strip() if idx_ref >= 0 and r[idx_ref] else "",
-            "addr": str(r[idx_addr]).strip() if idx_addr >= 0 and r[idx_addr] else "",
+            "addr_ref": str(r[idx_ref]).strip() if idx_ref >= 0 and len(r) > idx_ref and r[idx_ref] else "",
+            "addr": addr_str,
             "pallets": pal_val,
-            "temp": str(r[idx_temp]).strip() if idx_temp >= 0 and r[idx_temp] else "",
+            "temp": str(r[idx_temp]).strip() if idx_temp >= 0 and len(r) > idx_temp and r[idx_temp] else "+15+25",
             "date": date_str,
-            "driver": driver_clean,
-            "tc": str(r[idx_tc]).strip() if idx_tc >= 0 and r[idx_tc] else "",
-            "carrier": carrier
+            "carrier": carrier_val
         }
         raw_items.append(item)
 
@@ -214,30 +247,13 @@ def aggregate_orders(raw_items: list) -> dict:
     Группирует данные:
     1. По перевозчику.
     2. Внутри перевозчика схлопывает одинаковые 'Адрес ссылка', суммируя 'Количество паллет'.
-    Возвращает:
-      {
-         carrier_name: [
-             {
-                 'addr_ref': ...,
-                 'addr': ...,
-                 'pallets': sum_pallets,
-                 'temp': ...,
-                 'date': ...,
-                 'drivers': [...],
-                 'tcs': [...]
-             },
-             ...
-         ]
-      }
     """
     carriers_data = defaultdict(lambda: defaultdict(lambda: {
         "addr_ref": "",
         "addr": "",
         "pallets": 0.0,
         "temps": set(),
-        "dates": set(),
-        "drivers": set(),
-        "tcs": set()
+        "dates": set()
     }))
 
     for item in raw_items:
@@ -252,10 +268,6 @@ def aggregate_orders(raw_items: list) -> dict:
             group["temps"].add(item["temp"])
         if item["date"]:
             group["dates"].add(item["date"])
-        if item["driver"]:
-            group["drivers"].add(item["driver"])
-        if item["tc"]:
-            group["tcs"].add(item["tc"])
 
     result = {}
     for carrier, refs in carriers_data.items():
@@ -267,9 +279,7 @@ def aggregate_orders(raw_items: list) -> dict:
                 "pallets": g["pallets"],
                 "temp": ", ".join(sorted(g["temps"])) if g["temps"] else "+15+25",
                 "date": sorted(list(g["dates"]))[0] if g["dates"] else datetime.date.today().strftime("%d.%m.%Y"),
-                "all_dates": sorted(list(g["dates"])),
-                "drivers": sorted(list(g["drivers"])),
-                "tcs": sorted(list(g["tcs"]))
+                "all_dates": sorted(list(g["dates"]))
             })
         result[carrier] = carrier_items
 
@@ -277,8 +287,8 @@ def aggregate_orders(raw_items: list) -> dict:
 
 def save_aggregated_excel(aggregated_orders: dict, output_path: str):
     """
-    Формирует и сохраняет красивый Excel-файл со сводной таблицей заявок:
-    Колонки: Адрес ссылка, Адрес, Количество паллет, Режим термоперевозки, Дата отгрузки, Водитель, ТС, Перевозчик
+    Формирует и сохраняет сводный Excel-файл:
+    Колонки: Адрес ссылка, Адрес, Количество паллет, Режим термоперевозки, Дата отгрузки, Перевозчик
     """
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -290,8 +300,6 @@ def save_aggregated_excel(aggregated_orders: dict, output_path: str):
         "Количество паллет",
         "Режим термоперевозки",
         "Дата отгрузки",
-        "Водитель",
-        "ТС",
         "Перевозчик"
     ]
     ws.append(headers)
@@ -320,16 +328,12 @@ def save_aggregated_excel(aggregated_orders: dict, output_path: str):
     current_row = 2
     for carrier, items in sorted(aggregated_orders.items()):
         for it in items:
-            drivers_str = ", ".join(it["drivers"])
-            tcs_str = ", ".join(it["tcs"])
             ws.append([
                 it["addr_ref"],
                 it["addr"],
                 it["pallets"],
                 it["temp"],
                 it["date"],
-                drivers_str,
-                tcs_str,
                 carrier
             ])
             
@@ -337,7 +341,7 @@ def save_aggregated_excel(aggregated_orders: dict, output_path: str):
             for idx, c in enumerate(row_cells):
                 c.border = thin_border
                 c.font = Font(name="Arial", size=10)
-                if idx in (0, 1, 5, 6, 7):
+                if idx in (0, 1, 5):
                     c.alignment = align_left
                 elif idx in (2,):
                     c.alignment = align_right
@@ -367,16 +371,29 @@ def fill_order_docx(
     today_date_str: str = None
 ):
     """
-    Заполняет Шаблон.docx для конкретного перевозчика.
+    Заполняет Шаблон.docx для конкретного перевозчика:
+    - Кому: Перевозчик
+    - Дата: сегодняшняя дата
+    - Маршрут: <город/деревня> – д. Черная Грязь
+    - Тип транспортного средства: <N> х <кол-во> паллет, РЕФ <режим>
+    - Адрес погрузки: Адрес ссылка, Адрес
+    - Дата и время погрузки: Дата отгрузки к 9:00
+    - Дата и время выгрузки: Дата отгрузки, по прибытию
     """
     if today_date_str is None:
         today_date_str = get_russian_date_str()
 
     doc = docx.Document(template_path)
 
-    # 1. Сумма паллет
+    # 1. Сумма паллет и расчет машин
     total_pallets = sum(it["pallets"] for it in items)
     pallets_formatted = format_pallets(total_pallets)
+
+    # Логика расчета машин: до 33 = 1 машина, 34-66 = 2 машины, 67-99 = 3 машины
+    if total_pallets <= 0:
+        trucks_count = 1
+    else:
+        trucks_count = max(1, math.ceil(total_pallets / 33.0))
 
     # 2. Температурный режим
     temps = set()
@@ -387,9 +404,18 @@ def fill_order_docx(
                 if t_clean:
                     temps.add(t_clean)
     temp_str = ", ".join(sorted(temps)) if temps else "+15+25"
-    type_ts_value = f"{pallets_formatted} паллет, РЕФ {temp_str}"
+    type_ts_value = f"{trucks_count} х {pallets_formatted} паллет, РЕФ {temp_str}"
 
-    # 3. Адрес погрузки
+    # 3. Маршрут: <город/деревня> – д. Черная Грязь
+    settlements = []
+    for it in items:
+        s = extract_settlement(it["addr"])
+        if s and s not in settlements:
+            settlements.append(s)
+    route_from = ", ".join(settlements) if settlements else "г. Москва"
+    route_value = f"{route_from} – д. Черная Грязь"
+
+    # 4. Адрес погрузки: Адрес ссылка, Адрес
     if len(items) == 1:
         load_address_value = f"{items[0]['addr_ref']}, {items[0]['addr']}"
     else:
@@ -399,7 +425,7 @@ def fill_order_docx(
             addr_lines.append(f"{i+1}. {it['addr_ref']}, {it['addr']} ({pal_s} пал.)")
         load_address_value = "; ".join(addr_lines)
 
-    # 4. Даты погрузки и выгрузки
+    # 5. Даты погрузки и выгрузки
     dates = set()
     for it in items:
         if it.get("all_dates"):
@@ -434,35 +460,38 @@ def fill_order_docx(
         elif txt.startswith("Кому:"):
             # Шапка Кому
             set_field(p, "Кому: ", carrier, align=WD_ALIGN_PARAGRAPH.RIGHT)
+        elif txt.startswith("Маршрут:"):
+            # Маршрут
+            set_field(p, "Маршрут: ", route_value)
         elif txt.startswith("Тип транспортного средства:"):
+            # Тип транспортного средства
             set_field(p, "Тип транспортного средства: ", type_ts_value)
         elif txt.startswith("Адрес погрузки:"):
+            # Адрес погрузки
             set_field(p, "Адрес погрузки: ", load_address_value)
         elif txt.startswith("Дата и время погрузки:"):
+            # Дата и время погрузки
             set_field(p, "Дата и время погрузки: ", load_datetime_value)
         elif txt.startswith("Дата и время выгрузки:"):
+            # Дата и время выгрузки
             set_field(p, "Дата и время выгрузки: ", unload_datetime_value)
 
     doc.save(output_docx_path)
 
 def process_daily_orders(
     input_excel_path: str,
-    carriers_db_path: str = None,
     template_docx_path: str = None,
     output_dir: str = None
 ) -> dict:
     """
     Основная точка входа для генерации заявок:
     - Считывает Excel
-    - Сопоставляет перевозчиков
+    - Берет колонку 'Перевозчик' напрямую
     - Суммирует одинаковые Адрес ссылка
     - Создает сводный файл Excel
     - Создает документы Word для каждого перевозчика
-    - Создает общий ZIP-архив
-    Возвращает отчет со списком файлов и статистикой.
+    - Сохраняет все файлы в output_dir
     """
-    if carriers_db_path is None:
-        carriers_db_path = os.path.join(BASE_DIR, "База перевозчиков.xlsx")
     if template_docx_path is None:
         template_docx_path = os.path.join(BASE_DIR, "Шаблон.docx")
     if output_dir is None:
@@ -470,18 +499,15 @@ def process_daily_orders(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1. Загрузка базы
-    driver_to_carrier = load_drivers_database(carriers_db_path)
-
-    # 2. Чтение файла
-    raw_items = parse_orders_excel(input_excel_path, driver_to_carrier)
+    # 1. Чтение файла
+    raw_items = parse_orders_excel(input_excel_path)
     if not raw_items:
         raise ValueError("В загруженном файле нет данных для формирования заявок")
 
-    # 3. Агрегация
+    # 2. Агрегация
     aggregated = aggregate_orders(raw_items)
 
-    # Определяем суточную дату отгрузки для имен файлов (ДД.ММ)
+    # Определение суточной даты отгрузки (ДД.ММ)
     all_dates = set()
     for items in aggregated.values():
         for it in items:
@@ -490,21 +516,19 @@ def process_daily_orders(
 
     date_tag = ""
     if all_dates:
-        # Берем минимальную/основную дату
         primary_date = sorted(list(all_dates))[0]
-        # первичная дата в формате 30.09.2026 -> 30.09
         parts = primary_date.split(".")
         if len(parts) >= 2:
             date_tag = f"{parts[0]}.{parts[1]}"
     if not date_tag:
         date_tag = datetime.date.today().strftime("%d.%m")
 
-    # 4. Сохранение сводной таблицы Excel
+    # 3. Сохранение сводной таблицы Excel
     summary_excel_name = f"Сводный реестр заявок ({date_tag}).xlsx"
     summary_excel_path = os.path.join(output_dir, summary_excel_name)
     save_aggregated_excel(aggregated, summary_excel_path)
 
-    # 5. Заполнение Word заявок
+    # 4. Заполнение Word заявок
     generated_docs = []
     total_pallets_all = 0.0
 
@@ -513,6 +537,17 @@ def process_daily_orders(
     for carrier, items in sorted(aggregated.items()):
         total_carrier_pallets = sum(it["pallets"] for it in items)
         total_pallets_all += total_carrier_pallets
+
+        # Расчет машин
+        trucks = max(1, math.ceil(total_carrier_pallets / 33.0))
+
+        # Расчет маршрута
+        settlements = []
+        for it in items:
+            s = extract_settlement(it["addr"])
+            if s and s not in settlements:
+                settlements.append(s)
+        route_str = f"{', '.join(settlements)} – д. Черная Грязь" if settlements else "д. Черная Грязь"
 
         # Имя файла: Перевозчик ДД.ММ.docx (например: ИП Гончаров Иван Николаевич 30.09.docx)
         clean_carrier = sanitize_filename(carrier)
@@ -531,20 +566,14 @@ def process_daily_orders(
             "carrier": carrier,
             "filename": docx_filename,
             "path": docx_path,
+            "trucks": trucks,
+            "route": route_str,
             "pallets": total_carrier_pallets,
             "pallets_str": format_pallets(total_carrier_pallets),
             "temp": items[0]["temp"] if items else "+15+25",
             "items_count": len(items),
             "date": items[0]["date"] if items else ""
         })
-
-    # 6. Создание ZIP-архива со всеми сформированными файлами
-    zip_filename = f"Заявки_{date_tag}.zip"
-    zip_path = os.path.join(output_dir, zip_filename)
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(summary_excel_path, arcname=summary_excel_name)
-        for doc_info in generated_docs:
-            zf.write(doc_info["path"], arcname=doc_info["filename"])
 
     return {
         "status": "success",
@@ -553,12 +582,13 @@ def process_daily_orders(
         "total_carriers": len(generated_docs),
         "total_pallets": format_pallets(total_pallets_all),
         "summary_excel": summary_excel_name,
-        "zip_file": zip_filename,
         "orders": generated_docs
     }
 
 if __name__ == "__main__":
-    test_in = os.path.join(BASE_DIR, "Книга4.xlsx")
+    test_in = os.path.join(BASE_DIR, "Тест_Заявки_НовыйФормат.xlsx")
+    if not os.path.exists(test_in):
+        test_in = os.path.join(BASE_DIR, "Книга4.xlsx")
     if os.path.exists(test_in):
         print(f"Тестовый запуск на {test_in}...")
         res = process_daily_orders(test_in)
@@ -566,6 +596,5 @@ if __name__ == "__main__":
         print(f"Всего паллет: {res['total_pallets']}")
         print(f"Папка сохранения: {res['output_dir']}")
         print(f"Сводка Excel: {res['summary_excel']}")
-        print(f"Архив ZIP: {res['zip_file']}")
         for ord_info in res["orders"]:
-            print(f"  • {ord_info['filename']} ({ord_info['pallets_str']} пал.)")
+            print(f"  • {ord_info['filename']} | Машин: {ord_info['trucks']} | {ord_info['pallets_str']} пал. | Маршрут: {ord_info['route']}")
