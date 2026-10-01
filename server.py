@@ -107,10 +107,47 @@ def load_schedules_contacts():
                 print(f"Ошибка чтения {p}: {e}")
     return {}
 
+def find_email_in_dict(carrier_name: str, contacts: dict, fallback_email="n.rozhkov@puls.ru") -> str:
+    if not carrier_name or not contacts:
+        return fallback_email
+    carrier_name = carrier_name.strip()
+    # 1. Прямое совпадение
+    if carrier_name in contacts and contacts[carrier_name]:
+        return contacts[carrier_name]
+    
+    # 2. Без учета регистра
+    c_lower = carrier_name.lower()
+    for k, email in contacts.items():
+        if k.lower() == c_lower and email:
+            return email
+            
+    # 3. Нормализованное сравнение (убираем ИП, ООО, кавычки, точки)
+    def normalize_name(s):
+        s = s.lower()
+        s = re.sub(r'[\"«»\'\.,]', ' ', s)
+        for prefix in ['ип', 'ооо', 'ао', 'зао', 'пао', 'тк']:
+            s = re.sub(rf'\b{prefix}\b', ' ', s)
+        return ' '.join(s.split())
+        
+    c_norm = normalize_name(carrier_name)
+    if c_norm:
+        for k, email in contacts.items():
+            if normalize_name(k) == c_norm and email:
+                return email
+        tokens = [w for w in c_norm.split() if len(w) >= 3]
+        if tokens:
+            first_key_token = tokens[0]
+            for k, email in contacts.items():
+                k_norm = normalize_name(k)
+                if first_key_token in k_norm.split() and email:
+                    return email
+
+    return fallback_email
+
 def get_schedule_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
     """Возвращает email перевозчика для Графиков филиалов (из contacts_schedules.json)"""
     contacts = load_schedules_contacts()
-    return contacts.get(carrier_name, fallback_email)
+    return find_email_in_dict(carrier_name, contacts, fallback_email)
 
 def load_orders_contacts():
     """Загружает справочник email-адресов перевозчиков для Заявок"""
@@ -126,7 +163,7 @@ def load_orders_contacts():
 def get_order_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
     """Возвращает email перевозчика для Заявок (из contacts_orders.json)"""
     contacts = load_orders_contacts()
-    return contacts.get(carrier_name, fallback_email)
+    return find_email_in_dict(carrier_name, contacts, fallback_email)
 
 # Совместимость
 load_carriers_contacts = load_schedules_contacts
