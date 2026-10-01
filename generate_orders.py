@@ -104,50 +104,72 @@ def get_russian_date_str(dt: datetime.date = None) -> str:
     month_name = RUSSIAN_MONTHS[dt.month - 1]
     return f"{dt.day} {month_name} {dt.year}"
 
+def clean_client_name(name: str) -> str:
+    """Очищает наименование клиента от кавычек и форм собственности для надежного поиска в таблице"""
+    if not name:
+        return ""
+    s = str(name).lower()
+    for ch in ['"', "'", '«', '»', '(', ')', ',', '.', '-', '+']:
+        s = s.replace(ch, ' ')
+    words = [w.strip() for w in s.split() if w.strip()]
+    stop_words = {'ооо', 'ао', 'зао', 'пао', 'ип', 'тк', 'оао'}
+    filtered = [w for w in words if w not in stop_words]
+    return ' '.join(filtered)
+
+def find_client_address(client_name: str, client_address_map: dict) -> str:
+    """
+    Ищет адрес клиента в словаре адресов:
+    1. Точное совпадение
+    2. Регистронезависимое совпадение
+    3. Очищенное сравнение (без кавычек и ООО/ИП)
+    4. Вхождение подстроки
+    """
+    if not client_name or not client_address_map:
+        return ""
+    raw_target = str(client_name).strip()
+    clean_target = clean_client_name(raw_target)
+    
+    # 1 & 2. Точное и регистронезависимое совпадение
+    for k, addr in client_address_map.items():
+        if k.strip().lower() == raw_target.lower() and addr:
+            return addr.strip()
+            
+    # 3. Нормализованное совпадение
+    if clean_target:
+        for k, addr in client_address_map.items():
+            if clean_client_name(k) == clean_target and addr:
+                return addr.strip()
+                
+    # 4. Вхождение ключевого названия
+    if clean_target and len(clean_target) >= 4:
+        for k, addr in client_address_map.items():
+            ck = clean_client_name(k)
+            if (clean_target in ck or ck in clean_target) and addr:
+                return addr.strip()
+                
+    return ""
+
 def extract_settlement(addr: str) -> str:
     """
     Извлекает название города / деревни / села / пгт из полного адреса для строки 'Маршрут:'.
     Примеры:
-    - 'Московская обл, Истринский р-н, Лешково с, д. стр.244...' -> 'Лешково'
-    - '143500, Московская область, ..., деревня Давыдовское, ...' -> 'д. Давыдовское'
+    - 'Московская обл, Пушкинский р-н, Тарасовка с, ...' -> 'с. Тарасовка'
+    - '141280, Московская область, г.о. Пушкинский, ...' -> 'г.о. Пушкинский'
+    - '... деревня Давыдовское, ...' -> 'д. Давыдовское'
+    - '143581, ... д Лешково, стр. 244' -> 'д. Лешково'
     - '141400 Московская область, г. Химки, ...' -> 'г. Химки'
-    - '143080, Московская область, ..., пгт. Лесной Городок, ...' -> 'пгт. Лесной Городок'
-    - '142153, Московская область, ..., д Новоселки, ...' -> 'д. Новоселки'
+    - '143080, ..., пгт. Лесной Городок, ...' -> 'пгт. Лесной Городок'
     """
     if not addr:
         return ""
 
-    # 1. Поиск деревни: 'деревня Название' или 'д. Название' или 'д Название'
-    m = re.search(r'\bдеревня\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
-    if m:
-        return f"д. {m.group(1).strip()}"
-
-    m = re.search(r'(?:^|[\s,])д\.?\s+([А-Яа-яЁё\-]+)(?!\s*\d)', addr, re.IGNORECASE)
+    # 1. Городской округ: 'г.о. Пушкинский', 'г.о. Истра', 'г.о. Домодедово'
+    m = re.search(r'\bг\.?о\.?\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
     if m:
         val = m.group(1).strip()
-        if val.lower() not in ('стр', 'корп', 'влд', 'к'):
-            return f"д. {val}"
+        return f"г.о. {val}"
 
-    # 2. Поиск пгт / поселка
-    m = re.search(r'\bпгт\.?\s+([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
-    if m:
-        return f"пгт. {m.group(1).strip()}"
-    m = re.search(r'\bпос(?:елок|\.)?\s+([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
-    if m:
-        return f"пос. {m.group(1).strip()}"
-
-    # 3. Поиск села: 'Лешково с' или 'с. Лешково' или 'село Лешково'
-    m = re.search(r'\bсело\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
-    if m:
-        return f"{m.group(1).strip()}"
-    m = re.search(r'\b([А-Яа-яЁё\-]+)\s+с\b', addr, re.IGNORECASE)
-    if m:
-        return f"{m.group(1).strip()}"
-    m = re.search(r'(?:^|[\s,])с\.?\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
-    if m:
-        return f"{m.group(1).strip()}"
-
-    # 4. Поиск города: 'г. Химки', 'г Пушкино', 'г. Домодедово', 'Санкт-Петербург г', 'Домодедово г'
+    # 2. Город: 'г. Химки', 'г Пушкино', 'г. Домодедово', 'Санкт-Петербург г'
     m = re.search(r'(?:^|[\s,])г\.(?!о\b)\s*([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
     if m:
         val = m.group(1).strip()
@@ -164,10 +186,40 @@ def extract_settlement(addr: str) -> str:
     if m:
         return f"г. {m.group(1).strip()}"
 
-    # 5. Поиск городского округа: 'г.о. Подольск' -> 'г. Подольск'
-    m = re.search(r'\bг\.?о\.?\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
+    # 3. Село: 'село Лешково', 'Тарасовка с', 'с. Тарасовка'
+    m = re.search(r'\bсело\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
     if m:
-        return f"г. {m.group(1).strip()}"
+        return f"с. {m.group(1).strip()}"
+    m = re.search(r'\b([А-Яа-яЁё\-]+)\s+с(?:,|\b)', addr, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip()
+        if val.lower() not in ('московская', 'обл', 'область', 'р-н', 'район'):
+            return f"с. {val}"
+    m = re.search(r'(?:^|[\s,])с\.\s*([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip()
+        if val.lower() not in ('московская', 'обл', 'область', 'р-н', 'район'):
+            return f"с. {val}"
+
+    # 4. Деревня: 'деревня Давыдовское', 'д Новоселки', 'д. Лешково'
+    m = re.search(r'\bдеревня\s+([А-Яа-яЁё\-]+)', addr, re.IGNORECASE)
+    if m:
+        return f"д. {m.group(1).strip()}"
+
+    house_words = {'стр', 'строение', 'корп', 'корпус', 'вл', 'влд', 'владение', 'к', 'уч', 'участок', 'поз', 'пом', 'лит', 'литер'}
+    m = re.search(r'(?:^|[\s,])д\.?\s+([А-Яа-яЁё\-]{3,})(?!\s*\d)', addr, re.IGNORECASE)
+    if m:
+        val = m.group(1).strip()
+        if val.lower() not in house_words:
+            return f"д. {val}"
+
+    # 5. пгт / поселок
+    m = re.search(r'\bпгт\.?\s+([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
+    if m:
+        return f"пгт. {m.group(1).strip()}"
+    m = re.search(r'\bпос(?:елок|\.)?\s+([А-Яа-яЁё\-]+(?:\s+[А-Яа-яЁё\-]+)?)', addr, re.IGNORECASE)
+    if m:
+        return f"пос. {m.group(1).strip()}"
 
     parts = [p.strip() for p in addr.split(',') if p.strip()]
     for p in parts:
@@ -175,16 +227,16 @@ def extract_settlement(addr: str) -> str:
             return p
     return addr
 
-def parse_orders_excel(input_path: str) -> list:
+def parse_orders_excel(input_path: str):
     """
-    Считывает строки из файла отгрузок.
-    Колонка 'Перевозчик' берется напрямую из файла.
+    Считывает строки из файла отгрузок и формирует карту известных адресов клиентов.
+    Возвращает: (raw_items, client_address_map)
     """
     wb = openpyxl.load_workbook(input_path, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
-        return []
+        return [], {}
 
     header = [str(c).strip() if c is not None else "" for c in rows[0]]
 
@@ -206,6 +258,8 @@ def parse_orders_excel(input_path: str) -> list:
         idx_carrier = 5
 
     raw_items = []
+    client_address_map = {}
+    
     for r in rows[1:]:
         if not any(r):
             continue
@@ -229,10 +283,22 @@ def parse_orders_excel(input_path: str) -> list:
         else:
             date_str = datetime.date.today().strftime("%d.%m.%Y")
 
+        addr_ref_str = str(r[idx_ref]).strip() if idx_ref >= 0 and len(r) > idx_ref and r[idx_ref] else ""
         addr_str = str(r[idx_addr]).strip() if idx_addr >= 0 and len(r) > idx_addr and r[idx_addr] else ""
 
+        # Если в строке отдельный клиент и указан адрес, сохраняем в карту адресов
+        if addr_ref_str and addr_str:
+            if '+' not in addr_ref_str:
+                if addr_ref_str not in client_address_map:
+                    client_address_map[addr_ref_str] = addr_str
+            else:
+                # Если строка с плюсом, первый клиент относится к указанному адресу
+                parts = [p.strip() for p in addr_ref_str.split('+') if p.strip()]
+                if parts and parts[0] not in client_address_map:
+                    client_address_map[parts[0]] = addr_str
+
         item = {
-            "addr_ref": str(r[idx_ref]).strip() if idx_ref >= 0 and len(r) > idx_ref and r[idx_ref] else "",
+            "addr_ref": addr_ref_str,
             "addr": addr_str,
             "pallets": pal_val,
             "temp": str(r[idx_temp]).strip() if idx_temp >= 0 and len(r) > idx_temp and r[idx_temp] else "+15+25",
@@ -241,40 +307,44 @@ def parse_orders_excel(input_path: str) -> list:
         }
         raw_items.append(item)
 
-    return raw_items
+    return raw_items, client_address_map
 
-def aggregate_orders(raw_items: list) -> list:
+def aggregate_orders(raw_items: list, client_address_map: dict = None) -> list:
     """
     Группирует данные по паре (Перевозчик, Адрес ссылка).
-    Для каждой пары схлопывает количество паллет.
-    Возвращает список агрегированных заказов:
-    [
-        {
-            'carrier': ...,
-            'addr_ref': ...,
-            'addr': ...,
-            'pallets': sum_pallets,
-            'temp': ...,
-            'date': ...,
-            'trucks': ...
-        },
-        ...
-    ]
+    Для каждой пары суммирует паллеты.
+    Поддерживает строки с несколькими клиентами через '+':
+    - подтягивает адрес второго клиента из client_address_map
+    - формирует составной адрес погрузки с пунктами 1), 2)
+    - формирует составной маршрут через оба населенных пункта
     """
+    if client_address_map is None:
+        client_address_map = {}
+
     groups = defaultdict(lambda: {
         "carrier": "",
         "addr_ref": "",
         "addr": "",
+        "parts": [],
         "pallets": 0.0,
         "temps": set(),
         "dates": set()
     })
 
     for item in raw_items:
-        key = (item["carrier"], item["addr_ref"])
+        ref_raw = item["addr_ref"]
+        if '+' in ref_raw:
+            parts = [p.strip() for p in ref_raw.split('+') if p.strip()]
+            ref_normalized = " + ".join(parts)
+        else:
+            parts = [ref_raw]
+            ref_normalized = ref_raw
+
+        key = (item["carrier"], ref_normalized)
         g = groups[key]
         g["carrier"] = item["carrier"]
-        g["addr_ref"] = item["addr_ref"]
+        g["addr_ref"] = ref_normalized
+        g["parts"] = parts
         if item["addr"] and not g["addr"]:
             g["addr"] = item["addr"]
         g["pallets"] += item["pallets"]
@@ -290,10 +360,50 @@ def aggregate_orders(raw_items: list) -> list:
         temp_val = ", ".join(sorted(g["temps"])) if g["temps"] else "+15+25"
         date_val = sorted(list(g["dates"]))[0] if g["dates"] else datetime.date.today().strftime("%d.%m.%Y")
         
+        parts = g.get("parts") or [ref]
+        is_multi_client = len(parts) > 1
+
+        client_items = []
+        if is_multi_client:
+            # 1-й клиент (до плюса)
+            c1_name = parts[0]
+            c1_addr = g["addr"] or find_client_address(c1_name, client_address_map)
+            client_items.append({"client": c1_name, "addr": c1_addr})
+
+            # 2-й и последующие клиенты (после плюса)
+            for p_name in parts[1:]:
+                p_addr = find_client_address(p_name, client_address_map)
+                client_items.append({"client": p_name, "addr": p_addr})
+
+            # Форматируем адрес погрузки списком:
+            # 1) Клиент 1, Адрес 1
+            # 2) Клиент 2, Адрес 2
+            load_addr_lines = [f"{idx+1}) {ci['client']}, {ci['addr']}" for idx, ci in enumerate(client_items)]
+            display_load_addr = "\n  " + "\n  ".join(load_addr_lines)
+
+            # Формируем составной маршрут из двух населенных пунктов
+            settlements = []
+            for ci in client_items:
+                s = extract_settlement(ci["addr"])
+                if s and s not in settlements:
+                    settlements.append(s)
+            route_from = " – ".join(settlements) if settlements else "г. Москва"
+            route_val = f"{route_from} – д. Черная Грязь"
+        else:
+            display_load_addr = f"{ref}, {g['addr']}" if g["addr"] else ref
+            s = extract_settlement(g["addr"])
+            route_from = s if s else "г. Москва"
+            route_val = f"{route_from} – д. Черная Грязь"
+            client_items = [{"client": ref, "addr": g["addr"]}]
+
         aggregated.append({
             "carrier": carrier,
             "addr_ref": ref,
             "addr": g["addr"],
+            "is_multi_client": is_multi_client,
+            "client_items": client_items,
+            "display_load_addr": display_load_addr,
+            "route_value": route_val,
             "pallets": pallets,
             "pallets_str": format_pallets(pallets),
             "temp": temp_val,
@@ -348,9 +458,13 @@ def save_aggregated_excel(aggregated_orders: list, output_path: str):
 
     current_row = 2
     for it in aggregated_orders:
+        addr_for_excel = it["addr"]
+        if it.get("is_multi_client") and it.get("client_items"):
+            addr_for_excel = "\n".join(f"{idx+1}) {ci['client']}: {ci['addr']}" for idx, ci in enumerate(it["client_items"]))
+
         ws.append([
             it["addr_ref"],
-            it["addr"],
+            addr_for_excel,
             it["pallets"],
             it["temp"],
             it["date"],
@@ -392,15 +506,17 @@ def fill_order_docx(
     temp: str,
     date_ship: str,
     output_docx_path: str,
-    today_date_str: str = None
+    today_date_str: str = None,
+    load_address_value: str = None,
+    route_value: str = None
 ):
     """
     Заполняет Шаблон.docx для конкретного заказа:
     - Кому: Перевозчик
     - Дата: сегодняшняя дата
-    - Маршрут: <город/деревня> – д. Черная Грязь
+    - Маршрут: <город/деревня> – д. Черная Грязь (или список точек)
     - Тип транспортного средства: <N> х <кол-во> паллет, РЕФ <режим>
-    - Адрес погрузки: Адрес ссылка, Адрес
+    - Адрес погрузки: Адрес ссылка, Адрес (или нумерованный список при нескольких клиентах)
     - Дата и время погрузки: Дата отгрузки к 9:00
     - Дата и время выгрузки: Дата отгрузки, по прибытию
     """
@@ -412,11 +528,14 @@ def fill_order_docx(
     pallets_formatted = format_pallets(pallets)
     type_ts_value = f"{trucks} х {pallets_formatted} паллет, РЕФ {temp}"
 
-    settlement = extract_settlement(addr)
-    route_from = settlement if settlement else "г. Москва"
-    route_value = f"{route_from} – д. Черная Грязь"
+    if not route_value:
+        settlement = extract_settlement(addr)
+        route_from = settlement if settlement else "г. Москва"
+        route_value = f"{route_from} – д. Черная Грязь"
 
-    load_address_value = f"{addr_ref}, {addr}"
+    if not load_address_value:
+        load_address_value = f"{addr_ref}, {addr}" if addr else addr_ref
+
     load_datetime_value = f"{date_ship} к 9:00"
     unload_datetime_value = f"{date_ship}, по прибытию"
 
@@ -451,7 +570,10 @@ def fill_order_docx(
             set_field(p, "Тип транспортного средства: ", type_ts_value)
         elif txt.startswith("Адрес погрузки:"):
             # Адрес погрузки
-            set_field(p, "Адрес погрузки: ", load_address_value)
+            if load_address_value.startswith("\n"):
+                set_field(p, "Адрес погрузки:", load_address_value)
+            else:
+                set_field(p, "Адрес погрузки: ", load_address_value)
         elif txt.startswith("Дата и время погрузки:"):
             # Дата и время погрузки
             set_field(p, "Дата и время погрузки: ", load_datetime_value)
@@ -481,13 +603,13 @@ def process_daily_orders(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1. Чтение файла
-    raw_items = parse_orders_excel(input_excel_path)
+    # 1. Чтение файла и сбор карты адресов клиентов
+    raw_items, client_address_map = parse_orders_excel(input_excel_path)
     if not raw_items:
         raise ValueError("В загруженном файле нет данных для формирования заявок")
 
-    # 2. Агрегация по (Перевозчик, Адрес ссылка)
-    aggregated_orders = aggregate_orders(raw_items)
+    # 2. Агрегация по (Перевозчик, Адрес ссылка) с поддержкой составных рейсов (+)
+    aggregated_orders = aggregate_orders(raw_items, client_address_map)
 
     # Определение даты отгрузки (ДД.ММ)
     all_dates = set()
@@ -527,11 +649,9 @@ def process_daily_orders(
         trucks = it["trucks"]
         temp = it["temp"]
         date_ship = it["date"]
+        route_str = it.get("route_value") or (f"{extract_settlement(addr)} – д. Черная Грязь" if addr else "д. Черная Грязь")
 
         total_pallets_all += pallets
-
-        settlement = extract_settlement(addr)
-        route_str = f"{settlement} – д. Черная Грязь" if settlement else "д. Черная Грязь"
 
         # Имя файла: Перевозчик (Адрес ссылка) ДД.ММ.docx
         clean_carrier = sanitize_filename(carrier)
@@ -553,13 +673,16 @@ def process_daily_orders(
             temp=temp,
             date_ship=date_ship,
             output_docx_path=docx_path,
-            today_date_str=today_str
+            today_date_str=today_str,
+            load_address_value=it.get("display_load_addr"),
+            route_value=route_str
         )
 
         doc_info = {
             "carrier": carrier,
             "addr_ref": addr_ref,
             "addr": addr,
+            "display_load_addr": it.get("display_load_addr"),
             "filename": docx_filename,
             "path": docx_path,
             "trucks": trucks,
@@ -567,7 +690,8 @@ def process_daily_orders(
             "pallets": pallets,
             "pallets_str": format_pallets(pallets),
             "temp": temp,
-            "date": date_ship
+            "date": date_ship,
+            "is_multi_client": it.get("is_multi_client", False)
         }
         generated_docs.append(doc_info)
         carrier_orders_map[carrier].append(doc_info)

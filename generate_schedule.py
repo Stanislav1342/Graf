@@ -774,7 +774,7 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
                 ws[f'N{s_row}'].font = font_regular
                 ws[f'N{s_row}'].border = border_thin
                 
-                ws[f'O{s_row}'] = cnt
+                ws[f'O{s_row}'] = f'=COUNTIF(I$2:I${last_data_row}, N{s_row})'
                 ws[f'O{s_row}'].font = font_regular
                 ws[f'O{s_row}'].alignment = Alignment(horizontal='center')
                 ws[f'O{s_row}'].border = border_thin
@@ -801,10 +801,168 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             ws[f'P{s_row}'].alignment = Alignment(horizontal='right')
             ws[f'P{s_row}'].border = border_total
 
-
     wb_out.save(output_path)
     print(f"Таблица успешно создана: {output_path}")
     return all_scheduled_trips
+
+def refresh_schedule_file_summary(excel_path):
+    """
+    Обновляет сводные таблицы (колонки N, O, P) на всех листах Excel-файла графика,
+    а также актуализирует формулы колонки A (=G&I&J) и дату доставки (колонка K),
+    если пользователь добавил/удалил строки или изменил перевозчиков вручную в Excel.
+    """
+    if not excel_path or not os.path.exists(excel_path):
+        return False
+        
+    try:
+        wb = openpyxl.load_workbook(excel_path)
+    except Exception as e:
+        print(f"Ошибка открытия файла для обновления сводки: {e}")
+        return False
+        
+    modified = False
+    
+    font_header = Font(name='Arial', size=10, bold=True)
+    font_regular = Font(name='Arial', size=10)
+    font_key = Font(name='Arial', size=10, color='7F7F7F')
+    border_thin = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+    border_summary_header = Border(
+        left=Side(style='thin', color='BFBFBF'),
+        right=Side(style='thin', color='BFBFBF'),
+        top=Side(style='thin', color='BFBFBF'),
+        bottom=Side(style='thin', color='000000')
+    )
+    border_total = Border(
+        top=Side(style='thin', color='000000'),
+        bottom=Side(style='double', color='000000')
+    )
+    
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        h_c = str(ws['C1'].value or '').strip().lower()
+        h_d = str(ws['D1'].value or '').strip().lower()
+        h_g = str(ws['G1'].value or '').strip().lower()
+        if 'месяц' not in h_c and 'дата' not in h_c and 'дата' not in h_d and 'направление' not in h_g:
+            continue
+            
+        is_new_format = ('месяц' in h_c) or ('время' in str(ws['E1'].value or '').lower())
+        
+        # 1. Сканируем строки данных
+        data_rows = []
+        for r in range(2, ws.max_row + 1):
+            if is_new_format:
+                city = ws[f'G{r}'].value
+                carrier = ws[f'I{r}'].value
+                date_val = ws[f'D{r}'].value
+            else:
+                city = ws[f'G{r}'].value
+                carrier = ws[f'I{r}'].value
+                date_val = ws[f'C{r}'].value
+                
+            if not city or not str(city).strip() or 'итого' in str(city).lower() or 'всего' in str(city).lower():
+                continue
+            if not carrier or not str(carrier).strip():
+                continue
+            if not date_val:
+                continue
+                
+            data_rows.append(r)
+            
+            # Актуализируем формулу в колонке A и дату доставки в K (для нового формата)
+            if is_new_format:
+                ws[f'A{r}'].value = f'=G{r}&I{r}&J{r}'
+                ws[f'A{r}'].font = font_key
+                # Если дата доставки пустая, рассчитываем её
+                if not ws[f'K{r}'].value or str(ws[f'K{r}'].value).strip() == '':
+                    dep_d = date_val
+                    dep_t = str(ws[f'E{r}'].value or '09:00:00').strip()
+                    deliv_dt = calculate_delivery_datetime(dep_d, dep_t, str(city).strip())
+                    ws[f'K{r}'].value = deliv_dt.strftime('%d.%m.%Y %H:%M')
+                    ws[f'K{r}'].font = font_regular
+                    ws[f'K{r}'].alignment = Alignment(horizontal='center', vertical='center')
+                    ws[f'K{r}'].border = border_thin
+                    
+        if not data_rows:
+            continue
+            
+        last_data_row = max(data_rows)
+        if is_new_format:
+            ws.auto_filter.ref = f'C1:L{last_data_row}'
+            
+        # 2. Очищаем старую сводную таблицу в N..P
+        max_clear = max(ws.max_row + 10, 35)
+        for r in range(3, max_clear):
+            for col_l in ['N', 'O', 'P']:
+                cell = ws[f'{col_l}{r}']
+                cell.value = None
+                cell.border = None
+                
+        # 3. Подсчитываем перевозчиков по актуальным данным строк
+        carriers_in_sheet = [str(ws[f'I{r}'].value).strip() for r in data_rows if ws[f'I{r}'].value]
+        carrier_counts = Counter(carriers_in_sheet)
+        
+        if carrier_counts:
+            ws['N3'] = 'Перевозчик'
+            ws['N3'].font = font_header
+            ws['N3'].border = border_summary_header
+            ws['O3'] = 'Рейсы'
+            ws['O3'].font = font_header
+            ws['O3'].alignment = Alignment(horizontal='center')
+            ws['O3'].border = border_summary_header
+            ws['P3'] = '%'
+            ws['P3'].font = font_header
+            ws['P3'].alignment = Alignment(horizontal='center')
+            ws['P3'].border = border_summary_header
+            
+            s_row = 4
+            for car, cnt in carrier_counts.most_common():
+                ws[f'N{s_row}'] = car
+                ws[f'N{s_row}'].font = font_regular
+                ws[f'N{s_row}'].border = border_thin
+                
+                ws[f'O{s_row}'] = f'=COUNTIF(I$2:I${last_data_row}, N{s_row})'
+                ws[f'O{s_row}'].font = font_regular
+                ws[f'O{s_row}'].alignment = Alignment(horizontal='center')
+                ws[f'O{s_row}'].border = border_thin
+                
+                total_target_row = 4 + len(carrier_counts)
+                ws[f'P{s_row}'] = f'=O{s_row}/O{total_target_row}'
+                ws[f'P{s_row}'].font = font_regular
+                ws[f'P{s_row}'].number_format = '0.0%'
+                ws[f'P{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'P{s_row}'].border = border_thin
+                s_row += 1
+                
+            ws[f'N{s_row}'] = 'Всего'
+            ws[f'N{s_row}'].font = font_header
+            ws[f'N{s_row}'].border = border_total
+            
+            ws[f'O{s_row}'] = f'=SUM(O4:O{s_row-1})'
+            ws[f'O{s_row}'].font = font_header
+            ws[f'O{s_row}'].alignment = Alignment(horizontal='center')
+            ws[f'O{s_row}'].border = border_total
+            
+            ws[f'P{s_row}'] = '100%'
+            ws[f'P{s_row}'].font = font_header
+            ws[f'P{s_row}'].alignment = Alignment(horizontal='right')
+            ws[f'P{s_row}'].border = border_total
+            
+        modified = True
+        
+    if modified:
+        try:
+            wb.save(excel_path)
+            print(f"Сводные таблицы успешно обновлены в файле: {excel_path}")
+        except Exception as e:
+            print(f"Предупреждение: не удалось сохранить файл {excel_path}: {e}")
+            
+    wb.close()
+    return True
 
 def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
     """Генерирует индивидуальное конфиденциальное HTML-письмо для конкретного перевозчика"""

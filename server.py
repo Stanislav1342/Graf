@@ -1143,6 +1143,9 @@ async def upload_file(file: UploadFile = File(...)):
             out_filename = file.filename
             target_path = os.path.join(schedules_dir, out_filename)
             shutil.copy2(temp_path, target_path)
+            # Автоматически обновляем сводные таблицы (N..P) и формулы в самом файле Excel
+            core.refresh_schedule_file_summary(target_path)
+            all_trips = core.parse_final_schedule_file(target_path)
         else:
             # Запускаем генерацию из базового плана
             plan_trips, start_date = core.parse_plan_file(temp_path)
@@ -1262,6 +1265,8 @@ def select_file(req: SelectFileRequest):
         if not os.path.exists(target_path):
             return {"status": "error", "message": f"Файл не найден: {req.filename}"}
             
+        # Автоматически обновляем сводные таблицы (N..P) и формулы в самом файле Excel перед считыванием
+        core.refresh_schedule_file_summary(target_path)
         trips = core.parse_final_schedule_file(target_path)
         if not trips:
             return {"status": "error", "message": "В выбранном файле не найдено строк с рейсами"}
