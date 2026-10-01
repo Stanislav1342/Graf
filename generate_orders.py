@@ -229,17 +229,15 @@ def extract_settlement(addr: str) -> str:
 
 def parse_orders_excel(input_path: str):
     """
-    Считывает строки из файла отгрузок и формирует карту известных адресов клиентов.
+    Считывает строки из файла отгрузок и формирует список строк с поддержкой формул Excel и карты адресов.
     Возвращает: (raw_items, client_address_map)
     """
-    wb = openpyxl.load_workbook(input_path, data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows:
-        return [], {}
+    wb_data = openpyxl.load_workbook(input_path, data_only=True)
+    wb_form = openpyxl.load_workbook(input_path, data_only=False)
+    ws_data = wb_data.active
+    ws_form = wb_form.active
 
-    header = [str(c).strip() if c is not None else "" for c in rows[0]]
-
+    header = [str(ws_data.cell(1, c).value or '').strip() for c in range(1, ws_data.max_column + 1)]
     def find_idx(candidates, exclude_idx=-1):
         for cand in candidates:
             for i, h in enumerate(header):
@@ -253,29 +251,24 @@ def parse_orders_excel(input_path: str):
     idx_temp = find_idx(["режим", "термо"])
     idx_date = find_idx(["дата отгрузки", "дата"])
     idx_carrier = find_idx(["перевозчик", "подрядчик", "компания"])
-
     if idx_carrier == -1 and len(header) >= 6:
         idx_carrier = 5
 
     raw_items = []
     client_address_map = {}
-    
-    for r in rows[1:]:
-        if not any(r):
-            continue
 
-        carrier_val = str(r[idx_carrier]).strip() if idx_carrier >= 0 and len(r) > idx_carrier and r[idx_carrier] else ""
+    for r in range(2, ws_data.max_row + 1):
+        carrier_val = str(ws_data.cell(r, idx_carrier + 1).value or '').strip() if idx_carrier >= 0 else ''
         if not carrier_val:
             carrier_val = "Неизвестный перевозчик"
 
-        pal_val = 0.0
-        if idx_pal >= 0 and len(r) > idx_pal and r[idx_pal] is not None:
-            try:
-                pal_val = float(r[idx_pal])
-            except (ValueError, TypeError):
-                pal_val = 0.0
+        pal_cell = ws_data.cell(r, idx_pal + 1).value if idx_pal >= 0 else None
+        try:
+            pal_val = float(pal_cell) if pal_cell is not None else 0.0
+        except (ValueError, TypeError):
+            pal_val = 0.0
 
-        date_val = r[idx_date] if idx_date >= 0 and len(r) > idx_date else None
+        date_val = ws_data.cell(r, idx_date + 1).value if idx_date >= 0 else None
         if isinstance(date_val, (datetime.date, datetime.datetime)):
             date_str = date_val.strftime("%d.%m.%Y")
         elif date_val:
@@ -283,105 +276,205 @@ def parse_orders_excel(input_path: str):
         else:
             date_str = datetime.date.today().strftime("%d.%m.%Y")
 
-        addr_ref_str = str(r[idx_ref]).strip() if idx_ref >= 0 and len(r) > idx_ref and r[idx_ref] else ""
-        addr_str = str(r[idx_addr]).strip() if idx_addr >= 0 and len(r) > idx_addr and r[idx_addr] else ""
+        c_form = str(ws_form.cell(r, idx_ref + 1).value or '').strip() if idx_ref >= 0 else ''
+        c_data = str(ws_data.cell(r, idx_ref + 1).value or '').strip() if idx_ref >= 0 else ''
+        addr_str = str(ws_data.cell(r, idx_addr + 1).value or '').strip() if idx_addr >= 0 else ''
+        temp_str = str(ws_data.cell(r, idx_temp + 1).value or '').strip() if idx_temp >= 0 else '+15+25'
+        if not temp_str:
+            temp_str = '+15+25'
 
-        # Если в строке отдельный клиент и указан адрес, сохраняем в карту адресов
-        if addr_ref_str and addr_str:
-            if '+' not in addr_ref_str:
-                if addr_ref_str not in client_address_map:
-                    client_address_map[addr_ref_str] = addr_str
+        if not carrier_val and not addr_str and pal_val == 0 and not c_data and not c_form:
+            continue
+        if carrier_val == "Неизвестный перевозчик" and not addr_str and pal_val == 0 and not c_data:
+            continue
+
+        raw_cell = c_form if c_form else c_data
+        is_formula = raw_cell.startswith('=')
+
+        raw_no_quotes = re.sub(r'"[^"]*"', '', raw_cell)
+        cell_refs = [int(m) for m in re.findall(r'\b[A-Za-z]+\$?(\d+)\b', raw_no_quotes)]
+        if not cell_refs and '+' in raw_cell:
+            cell_refs = [int(m) for m in re.findall(r'[+]\s*(?:[A-Za-z]+\$?)?(\d+)\b', raw_no_quotes)]
+        donor_rows = [row_idx for row_idx in cell_refs if row_idx != r]
+
+        base_client = ""
+        donor_client_names = []
+
+        if is_formula:
+            str_literals = re.findall(r'"([^"]+)"', raw_cell)
+            clean_literals = [s.replace('+', '').strip() for s in str_literals if s.replace('+', '').strip()]
+            if clean_literals:
+                base_client = clean_literals[0]
+            elif cell_refs:
+                first_ref = cell_refs[0]
+                val = ws_data.cell(first_ref, idx_ref + 1).value if ws_data else None
+                base_client = str(val or '').strip()
+            elif c_data:
+                base_client = c_data.split('+')[0].strip()
             else:
-                # Если строка с плюсом, первый клиент относится к указанному адресу
-                parts = [p.strip() for p in addr_ref_str.split('+') if p.strip()]
-                if parts and parts[0] not in client_address_map:
-                    client_address_map[parts[0]] = addr_str
+                base_client = raw_cell.strip('=" ')
+        else:
+            if '+' in raw_cell:
+                parts = [p.strip() for p in raw_cell.split('+') if p.strip()]
+                base_client = parts[0]
+                if not donor_rows and len(parts) > 1:
+                    donor_client_names = parts[1:]
+            else:
+                base_client = raw_cell
 
-        item = {
-            "addr_ref": addr_ref_str,
+        if not base_client and c_data:
+            base_client = c_data
+
+        if base_client and addr_str and '+' not in base_client:
+            if base_client not in client_address_map:
+                client_address_map[base_client] = addr_str
+
+        raw_items.append({
+            "row_num": r,
+            "carrier": carrier_val,
+            "raw_cell": raw_cell,
+            "addr_ref": base_client,
+            "base_client": base_client,
+            "donor_row_nums": donor_rows,
+            "donor_client_names": donor_client_names,
             "addr": addr_str,
             "pallets": pal_val,
-            "temp": str(r[idx_temp]).strip() if idx_temp >= 0 and len(r) > idx_temp and r[idx_temp] else "+15+25",
+            "temp": temp_str,
             "date": date_str,
-            "carrier": carrier_val
-        }
-        raw_items.append(item)
+            "is_donor": False
+        })
 
+    wb_data.close()
+    wb_form.close()
     return raw_items, client_address_map
 
 def aggregate_orders(raw_items: list, client_address_map: dict = None) -> list:
     """
-    Группирует данные по паре (Перевозчик, Адрес ссылка).
+    Группирует данные по паре (Перевозчик, Базовый клиент).
     Для каждой пары суммирует паллеты.
-    Поддерживает строки с несколькими клиентами через '+':
-    - подтягивает адрес второго клиента из client_address_map
-    - формирует составной адрес погрузки с пунктами 1), 2)
-    - формирует составной маршрут через оба населенных пункта
+    Поддерживает склеивание заказов (перемещение):
+    - если в строке указана формула со ссылками на строки (A28, A27) или клиенты через +,
+      заказ-донор ПОЛНОСТЬЮ перемещается в целевой заказ (в отдельную заявку не идет);
+    - подтягиваются адреса и паллеты всех склеенных строк;
+    - формируется составной адрес погрузки с пунктами 1), 2), 3);
+    - формируется составной маршрут через все точки;
+    - паллеты суммируются;
+    - количество машин определяется как ceil(pallets / 33.0).
     """
     if client_address_map is None:
         client_address_map = {}
 
+    rows_by_id = {it["row_num"]: it for it in raw_items}
+
+    # 1. Если указаны текстовые имена доноров (без номеров строк), находим соответствующие строки
+    for it in raw_items:
+        if not it["donor_row_nums"] and it.get("donor_client_names"):
+            for p_name in it["donor_client_names"]:
+                clean_p = clean_client_name(p_name)
+                for cand_row, cand_it in rows_by_id.items():
+                    if cand_row != it["row_num"] and not cand_it.get("is_donor"):
+                        if clean_client_name(cand_it["base_client"]) == clean_p:
+                            it["donor_row_nums"].append(cand_row)
+                            break
+
+    # 2. Помечаем все строки-доноры: они полностью перемещены и исключаются из отдельных заявок
+    for it in raw_items:
+        for d_num in it.get("donor_row_nums", []):
+            if d_num in rows_by_id:
+                rows_by_id[d_num]["is_donor"] = True
+
+    # 3. Группируем по (Перевозчик, Базовый клиент)
     groups = defaultdict(lambda: {
         "carrier": "",
-        "addr_ref": "",
-        "addr": "",
-        "parts": [],
+        "base_client": "",
+        "rows": [],
+        "donors": [],
         "pallets": 0.0,
         "temps": set(),
         "dates": set()
     })
 
-    for item in raw_items:
-        ref_raw = item["addr_ref"]
-        if '+' in ref_raw:
-            parts = [p.strip() for p in ref_raw.split('+') if p.strip()]
-            ref_normalized = " + ".join(parts)
-        else:
-            parts = [ref_raw]
-            ref_normalized = ref_raw
+    for it in raw_items:
+        if it.get("is_donor"):
+            # Заказ перемещен в другой заказ — отдельная заявка не формируется!
+            continue
 
-        key = (item["carrier"], ref_normalized)
+        key = (it["carrier"], it["base_client"])
         g = groups[key]
-        g["carrier"] = item["carrier"]
-        g["addr_ref"] = ref_normalized
-        g["parts"] = parts
-        if item["addr"] and not g["addr"]:
-            g["addr"] = item["addr"]
-        g["pallets"] += item["pallets"]
-        if item["temp"]:
-            g["temps"].add(item["temp"])
-        if item["date"]:
-            g["dates"].add(item["date"])
+        g["carrier"] = it["carrier"]
+        g["base_client"] = it["base_client"]
+        g["rows"].append(it)
+        g["pallets"] += it["pallets"]
+        if it["temp"]:
+            g["temps"].add(it["temp"])
+        if it["date"]:
+            g["dates"].add(it["date"])
+
+        for d_num in it.get("donor_row_nums", []):
+            if d_num in rows_by_id:
+                d_row = rows_by_id[d_num]
+                g["donors"].append(d_row)
+                g["pallets"] += d_row["pallets"]
+                if d_row["temp"]:
+                    g["temps"].add(d_row["temp"])
+                if d_row["date"]:
+                    g["dates"].add(d_row["date"])
 
     aggregated = []
-    for (carrier, ref), g in groups.items():
+    for (carrier, b_client), g in groups.items():
         pallets = g["pallets"]
         trucks = max(1, math.ceil(pallets / 33.0)) if pallets > 0 else 1
         temp_val = ", ".join(sorted(g["temps"])) if g["temps"] else "+15+25"
         date_val = sorted(list(g["dates"]))[0] if g["dates"] else datetime.date.today().strftime("%d.%m.%Y")
-        
-        parts = g.get("parts") or [ref]
-        is_multi_client = len(parts) > 1
 
-        client_items = []
+        # Приоритетный адрес для основного клиента: из строки с формулой/донорами, либо из последней строки
+        main_addr = ""
+        for rw in g["rows"]:
+            if rw.get("donor_row_nums") and rw["addr"]:
+                main_addr = rw["addr"]
+                break
+        if not main_addr:
+            for rw in reversed(g["rows"]):
+                if rw["addr"]:
+                    main_addr = rw["addr"]
+                    break
+        if not main_addr:
+            main_addr = find_client_address(b_client, client_address_map)
+
+        client_items = [{
+            "client": b_client,
+            "addr": main_addr,
+            "pallets": sum(rw["pallets"] for rw in g["rows"])
+        }]
+
+        # Добавляем всех доноров
+        for d_row in g["donors"]:
+            d_client = d_row["base_client"]
+            d_addr = d_row["addr"] or find_client_address(d_client, client_address_map)
+            client_items.append({
+                "client": d_client,
+                "addr": d_addr,
+                "pallets": d_row["pallets"]
+            })
+
+        is_multi_client = len(client_items) > 1
+
         if is_multi_client:
-            # 1-й клиент (до плюса)
-            c1_name = parts[0]
-            c1_addr = g["addr"] or find_client_address(c1_name, client_address_map)
-            client_items.append({"client": c1_name, "addr": c1_addr})
+            combined_ref = " + ".join(ci["client"] for ci in client_items)
+            load_addr_lines = []
+            for idx, ci in enumerate(client_items):
+                c_name = ci["client"]
+                c_addr = ci["addr"]
+                clean_c = clean_client_name(c_name)
+                clean_a = clean_client_name(c_addr[:len(c_name)+15])
+                if clean_c and clean_c in clean_a:
+                    line_text = c_addr
+                else:
+                    line_text = f"{c_name}, {c_addr}" if c_addr else c_name
+                load_addr_lines.append(f"{idx+1}) {line_text}")
 
-            # 2-й и последующие клиенты (после плюса)
-            for p_name in parts[1:]:
-                p_addr = find_client_address(p_name, client_address_map)
-                client_items.append({"client": p_name, "addr": p_addr})
-
-            # Форматируем адрес погрузки списком:
-            # 1) Клиент 1, Адрес 1
-            # 2) Клиент 2, Адрес 2
-            load_addr_lines = [f"{idx+1}) {ci['client']}, {ci['addr']}" for idx, ci in enumerate(client_items)]
             display_load_addr = "\n  " + "\n  ".join(load_addr_lines)
 
-            # Формируем составной маршрут из двух населенных пунктов
             settlements = []
             for ci in client_items:
                 s = extract_settlement(ci["addr"])
@@ -390,16 +483,17 @@ def aggregate_orders(raw_items: list, client_address_map: dict = None) -> list:
             route_from = " – ".join(settlements) if settlements else "г. Москва"
             route_val = f"{route_from} – д. Черная Грязь"
         else:
-            display_load_addr = f"{ref}, {g['addr']}" if g["addr"] else ref
-            s = extract_settlement(g["addr"])
+            combined_ref = b_client
+            display_load_addr = f"{b_client}, {main_addr}" if main_addr else b_client
+            s = extract_settlement(main_addr)
             route_from = s if s else "г. Москва"
             route_val = f"{route_from} – д. Черная Грязь"
-            client_items = [{"client": ref, "addr": g["addr"]}]
 
         aggregated.append({
             "carrier": carrier,
-            "addr_ref": ref,
-            "addr": g["addr"],
+            "addr_ref": combined_ref,
+            "base_client": b_client,
+            "addr": main_addr,
             "is_multi_client": is_multi_client,
             "client_items": client_items,
             "display_load_addr": display_load_addr,
@@ -524,9 +618,7 @@ def fill_order_docx(
         today_date_str = get_russian_date_str()
 
     doc = docx.Document(template_path)
-
-    pallets_formatted = format_pallets(pallets)
-    type_ts_value = f"{trucks} х {pallets_formatted} паллет, РЕФ {temp}"
+    type_ts_value = f"{trucks} х 33 паллет, РЕФ {temp}"
 
     if not route_value:
         settlement = extract_settlement(addr)
@@ -656,6 +748,8 @@ def process_daily_orders(
         # Имя файла: Перевозчик (Адрес ссылка) ДД.ММ.docx
         clean_carrier = sanitize_filename(carrier)
         clean_ref = sanitize_filename(addr_ref)
+        if len(clean_ref) > 80:
+            clean_ref = clean_ref[:80].strip()
         if clean_ref:
             docx_filename = f"{clean_carrier} ({clean_ref}) {date_tag}.docx"
         else:
