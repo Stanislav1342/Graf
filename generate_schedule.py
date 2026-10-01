@@ -968,27 +968,34 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
     """Генерирует индивидуальное конфиденциальное HTML-письмо для конкретного перевозчика"""
     rows_html = ""
     for tr in trips:
-        bg_color = "#e2efda" if tr['pallets'] == 40 else "#ffffff"
-        deliv_str = tr.get('delivery_str') or ''
+        bg_color = "#e2efda" if tr.get('pallets') == 40 else "#ffffff"
+        deliv_str = tr.get('delivery_str') or tr.get('deliv_date') or ''
+        day_str = tr.get('day') or ''
+        city_str = tr.get('city') or tr.get('route') or ''
+        time_str = str(tr.get('time', ''))[:5]
+        truck_str = str(tr.get('truck_num', ''))
+        pal_str = str(tr.get('pallets', ''))
         rows_html += f"""
         <tr style="background-color: {bg_color}; text-align: center;">
-            <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['date']}</td>
-            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold;">{tr['day']}</td>
-            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold; color: #1f4e79;">{tr['time'][:5]}</td>
-            <td style="padding: 8px; border: 1px solid #d9d9d9; text-align: left; font-weight: bold;">{tr['city']}</td>
-            <td style="padding: 8px; border: 1px solid #d9d9d9;">№ {tr['truck_num']}</td>
-            <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr['pallets']} пал.</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9;">{tr.get('date', '')}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold;">{day_str}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold; color: #1f4e79;">{time_str}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9; text-align: left; font-weight: bold;">{city_str}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9;">№ {truck_str}</td>
+            <td style="padding: 8px; border: 1px solid #d9d9d9;">{pal_str} пал.</td>
             <td style="padding: 8px; border: 1px solid #d9d9d9; font-weight: bold; color: #1f4e79;">{deliv_str}</td>
         </tr>
         """
         
+    period_str = f"{start_date_str} – {end_date_str}" if start_date_str != end_date_str else start_date_str
+
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
         <style>
-            body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333333; }}
+            body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333333; line-height: 1.5; }}
             table {{ border-collapse: collapse; width: 100%; max-width: 720px; margin-top: 15px; margin-bottom: 20px; }}
             th {{ background-color: #2f5597; color: #ffffff; padding: 10px; border: 1px solid #2f5597; text-align: center; }}
             .notice {{ background-color: #fff2cc; border-left: 4px solid #d6b656; padding: 12px; margin: 15px 0; font-size: 13px; }}
@@ -996,8 +1003,14 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
         </style>
     </head>
     <body>
-        <p>Здравствуйте!</p>
-        <p>Направляем согласованный график погрузки транспортных средств <b>«{carrier_name}»</b> на складе <b>РЦ «Черная Грязь»</b> на период <b>{start_date_str} – {end_date_str}</b>:</p>
+        <p>Добрый день!</p>
+        <p>Направляем согласованный график погрузки на период <b>{period_str}</b>.<br>
+        Просим ознакомиться с графиком и обеспечить его соблюдение.</p>
+        
+        <p><b>Важные условия регламента:</b><br>
+        • Погрузка на складе осуществляется строго из расчёта 2 машины в час.<br>
+        • Просьба обеспечить своевременное прибытие ТС к назначенному тайм-слоту, без опозданий.<br>
+        • В случае возникновения задержек в пути необходимо оперативно информировать ответственных лиц, чтобы своевременно скорректировать дальнейшее планирование.</p>
         
         <table>
             <thead>
@@ -1015,13 +1028,6 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
                 {rows_html}
             </tbody>
         </table>
-        
-        <div class="notice">
-            <b>Важные условия регламента:</b><br>
-            • Условие погрузки склада: <b>строго 2 машины в час</b>.<br>
-            • Просьба обеспечить своевременное прибытие ТС к назначенному тайм-слоту (без опозданий).<br>
-            • При возникновении задержек в пути оперативно информировать диспетчера РЦ.
-        </div>
         
         <p>С уважением,<br>
         <b>Отдел логистики РЦ «Черная Грязь»</b><br>

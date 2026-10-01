@@ -23,6 +23,7 @@ import tempfile
 import webbrowser
 import socket
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Optional, List
 from collections import Counter, defaultdict
@@ -107,19 +108,19 @@ def load_schedules_contacts():
                 print(f"Ошибка чтения {p}: {e}")
     return {}
 
-def find_email_in_dict(carrier_name: str, contacts: dict, fallback_email="n.rozhkov@puls.ru") -> str:
+def find_email_in_dict(carrier_name: str, contacts: dict, fallback_email="") -> str:
     if not carrier_name or not contacts:
         return fallback_email
     carrier_name = carrier_name.strip()
     # 1. Прямое совпадение
-    if carrier_name in contacts and contacts[carrier_name]:
-        return contacts[carrier_name]
+    if carrier_name in contacts and contacts[carrier_name] and contacts[carrier_name].strip():
+        return contacts[carrier_name].strip()
     
     # 2. Без учета регистра
     c_lower = carrier_name.lower()
     for k, email in contacts.items():
-        if k.lower() == c_lower and email:
-            return email
+        if k.lower() == c_lower and email and email.strip():
+            return email.strip()
             
     # 3. Нормализованное сравнение (убираем ИП, ООО, кавычки, точки)
     def normalize_name(s):
@@ -132,19 +133,19 @@ def find_email_in_dict(carrier_name: str, contacts: dict, fallback_email="n.rozh
     c_norm = normalize_name(carrier_name)
     if c_norm:
         for k, email in contacts.items():
-            if normalize_name(k) == c_norm and email:
-                return email
+            if normalize_name(k) == c_norm and email and email.strip():
+                return email.strip()
         tokens = [w for w in c_norm.split() if len(w) >= 3]
         if tokens:
             first_key_token = tokens[0]
             for k, email in contacts.items():
                 k_norm = normalize_name(k)
-                if first_key_token in k_norm.split() and email:
-                    return email
+                if first_key_token in k_norm.split() and email and email.strip():
+                    return email.strip()
 
     return fallback_email
 
-def get_schedule_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
+def get_schedule_carrier_email(carrier_name, fallback_email=""):
     """Возвращает email перевозчика для Графиков филиалов (из contacts_schedules.json)"""
     contacts = load_schedules_contacts()
     return find_email_in_dict(carrier_name, contacts, fallback_email)
@@ -160,7 +161,7 @@ def load_orders_contacts():
             print(f"Ошибка чтения {p}: {e}")
     return {}
 
-def get_order_carrier_email(carrier_name, fallback_email="n.rozhkov@puls.ru"):
+def get_order_carrier_email(carrier_name, fallback_email=""):
     """Возвращает email перевозчика для Заявок (из contacts_orders.json)"""
     contacts = load_orders_contacts()
     return find_email_in_dict(carrier_name, contacts, fallback_email)
@@ -947,8 +948,8 @@ def index_page():
         });
         const res = await resp.json();
 
-        if (res.status === 'success') {
-          alert('Успешно: ' + res.message);
+        if (res.status === 'success' || res.status === 'warning') {
+          alert(res.message);
           closeSendModal();
         } else {
           alert('Ошибка при отправке: ' + res.message);
@@ -1120,8 +1121,8 @@ def index_page():
         });
         const res = await resp.json();
 
-        if (res.status === 'success') {
-          alert('Успешно: ' + res.message);
+        if (res.status === 'success' || res.status === 'warning') {
+          alert(res.message);
           closeOrdersSendModal();
         } else {
           alert('Ошибка при отправке: ' + res.message);
@@ -1392,8 +1393,13 @@ def send_emails(req: EmailRequest):
         end_d = dates[-1] if dates else ''
         
         sent_count = 0
+        missing_carriers = []
         for car, c_trips in carrier_groups.items():
             carrier_email = (req.email if req.email else None) or get_carrier_email(car)
+            if not carrier_email or not carrier_email.strip():
+                missing_carriers.append(car)
+                continue
+
             sorted_trips = sorted(c_trips, key=lambda x: (x.get('dt') or datetime.strptime(x['date'], '%d.%m.%Y'), x['time']))
             mail = outlook.CreateItem(0)
             mail.To = carrier_email
@@ -1407,13 +1413,33 @@ def send_emails(req: EmailRequest):
             sent_count += 1
             
         action_text = "сохранено в Черновиках" if draft_mode else "отправлено"
-        msg = f"Успешно {action_text} писем перевозчикам: {sent_count} шт."
-        return {"status": "success", "message": msg, "count": sent_count}
+        action_fail = "сохранены в Черновиках" if draft_mode else "отправлены"
+
+        missing_info = ""
+        if missing_carriers:
+            missing_msgs = [f"почта {c} не найдена в базе" for c in missing_carriers]
+            missing_info = "Внимание: " + "; ".join(missing_msgs) + "."
+
+        if sent_count > 0:
+            msg = f"Успешно {action_text} писем перевозчикам: {sent_count} шт."
+            if missing_info:
+                msg += f"\n{missing_info}"
+            return {"status": "success", "message": msg, "count": sent_count, "missing": missing_carriers}
+        else:
+            msg = f"Письма не {action_fail}.\n{missing_info}" if missing_info else "Нет данных для отправки."
+            return {"status": "warning", "message": msg, "count": 0, "missing": missing_carriers}
         
     except ImportError:
         action_text = "черновиков" if draft_mode else "отправки"
-        msg = f"Библиотека pywin32 не установлена (требуется Windows + Outlook). Готово к работе {len(target_carriers)} писем {action_text}."
-        return {"status": "success", "message": msg, "count": len(target_carriers)}
+        valid_carriers = [car for car in target_carriers if (req.email or get_carrier_email(car))]
+        missing_carriers = [car for car in target_carriers if car not in valid_carriers]
+        missing_info = ""
+        if missing_carriers:
+            missing_msgs = [f"почта {c} не найдена в базе" for c in missing_carriers]
+            missing_info = "\nВнимание: " + "; ".join(missing_msgs) + "."
+        msg = f"Библиотека pywin32 не установлена (требуется Windows + Outlook). Готово к работе {len(valid_carriers)} писем {action_text}.{missing_info}"
+        status_val = "success" if valid_carriers else "warning"
+        return {"status": status_val, "message": msg, "count": len(valid_carriers), "missing": missing_carriers}
     except Exception as e:
         return {"status": "error", "message": f"Ошибка Outlook: {str(e)}"}
 
@@ -1504,9 +1530,14 @@ def send_orders_emails(req: EmailRequest):
 
         sent_count = 0
         orders_dir = get_orders_dir()
+        missing_carriers = []
 
         for car, c_orders in carrier_groups.items():
             carrier_email = (req.email if req.email else None) or get_order_carrier_email(car)
+            if not carrier_email or not carrier_email.strip():
+                missing_carriers.append(car)
+                continue
+
             date_str = c_orders[0].get('date') or CURRENT_ORDERS_STATE.get("date_tag") or datetime.now().strftime("%d.%m.%Y")
 
             mail = outlook.CreateItem(0)
@@ -1529,13 +1560,33 @@ def send_orders_emails(req: EmailRequest):
             sent_count += 1
 
         action_text = "сохранено в Черновиках" if draft_mode else "отправлено"
-        msg = f"Успешно {action_text} писем с заявками перевозчикам: {sent_count} шт."
-        return {"status": "success", "message": msg, "count": sent_count}
+        action_fail = "сохранены в Черновиках" if draft_mode else "отправлены"
+
+        missing_info = ""
+        if missing_carriers:
+            missing_msgs = [f"почта {c} не найдена в базе" for c in missing_carriers]
+            missing_info = "Внимание: " + "; ".join(missing_msgs) + "."
+
+        if sent_count > 0:
+            msg = f"Успешно {action_text} писем с заявками перевозчикам: {sent_count} шт."
+            if missing_info:
+                msg += f"\n{missing_info}"
+            return {"status": "success", "message": msg, "count": sent_count, "missing": missing_carriers}
+        else:
+            msg = f"Письма не {action_fail}.\n{missing_info}" if missing_info else "Нет данных для отправки."
+            return {"status": "warning", "message": msg, "count": 0, "missing": missing_carriers}
 
     except ImportError:
         action_text = "черновиков" if draft_mode else "отправки"
-        msg = f"Библиотека pywin32 не установлена (требуется Windows + Outlook). Готово к работе {len(target_carriers)} писем {action_text} с прикрепленными заявками."
-        return {"status": "success", "message": msg, "count": len(target_carriers)}
+        valid_carriers = [car for car in target_carriers if (req.email or get_order_carrier_email(car))]
+        missing_carriers = [car for car in target_carriers if car not in valid_carriers]
+        missing_info = ""
+        if missing_carriers:
+            missing_msgs = [f"почта {c} не найдена в базе" for c in missing_carriers]
+            missing_info = "\nВнимание: " + "; ".join(missing_msgs) + "."
+        msg = f"Библиотека pywin32 не установлена (требуется Windows + Outlook). Готово к работе {len(valid_carriers)} писем {action_text} с прикрепленными заявками.{missing_info}"
+        status_val = "success" if valid_carriers else "warning"
+        return {"status": status_val, "message": msg, "count": len(valid_carriers), "missing": missing_carriers}
     except Exception as e:
         return {"status": "error", "message": f"Ошибка Outlook: {str(e)}"}
 

@@ -834,8 +834,8 @@ def generate_order_email_html(carrier: str, orders: list, date_str: str) -> str:
 
     html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 14px; color: #1e293b; line-height: 1.5;">
-        <p>Здравствуйте!</p>
-        <p>Во вложении направляем транспортную заявку на организацию автоперевозки со склада РЦ Черная Грязь (дата отгрузки: <b>{date_str}</b>).</p>
+        <p>Добрый день!</p>
+        <p>Заявки на перевозку во вложении.</p>
         
         <table style="border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13px;">
             <tr style="background: #f1f5f9; color: #334155;">
