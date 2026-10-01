@@ -1030,7 +1030,6 @@ def generate_carrier_html(carrier_name, trips, start_date_str, end_date_str):
         </table>
         
         <p>С уважением,<br>
-        <b>Отдел логистики РЦ «Черная Грязь»</b><br>
         ФК «ПУЛЬС»</p>
         
         <div class="footer">
