@@ -667,7 +667,7 @@ def parse_final_schedule_file(excel_path):
                 carrier_val = ws[f'G{row}'].value
                 pallets = ws[f'H{row}'].value or 33
                 deliv_val = ws[f'I{row}'].value
-                tariff_val = None
+                tariff_val = ws[f'J{row}'].value
             elif fmt == 'starts_c':
                 month_val = ws[f'C{row}'].value or ''
                 date_val = ws[f'D{row}'].value
@@ -795,7 +795,7 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
     # Чистая структура: график начинается сразу со столбца Месяц (A), без столбцов A и B
     col_widths = {
         'A': 13, 'B': 12, 'C': 15, 'D': 6, 'E': 22, 'F': 15,
-        'G': 26, 'H': 14, 'I': 18, 'J': 5, 'K': 22, 'L': 10, 'M': 10
+        'G': 26, 'H': 14, 'I': 18, 'J': 16, 'K': 5, 'L': 22, 'M': 10, 'N': 10
     }
 
     all_scheduled_trips = []
@@ -816,7 +816,7 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
         headers = {
             'A': 'Месяц', 'B': 'Дата', 'C': 'Время погрузки', 'D': '',
             'E': 'Направление', 'F': 'Номер Машины', 'G': 'Перевозчик',
-            'H': 'Кол-во паллет ', 'I': 'Дата доставки'
+            'H': 'Кол-во паллет ', 'I': 'Дата доставки', 'J': 'Тариф'
         }
         for col_l, h_text in headers.items():
             cell = ws[f'{col_l}1']
@@ -925,8 +925,15 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             c_i.alignment = Alignment(horizontal='center', vertical='center')
             c_i.border = border_thin
             
+            c_j = ws[f'J{row_idx}']
+            c_j.value = tr.get('tariff', 0)
+            c_j.font = font_regular
+            c_j.number_format = '#,##0 ₽'
+            c_j.alignment = Alignment(horizontal='right', vertical='center')
+            c_j.border = border_thin
+            
             if tr['pallets'] == 40:
-                for col_l in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']:
+                for col_l in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
                     ws[f'{col_l}{row_idx}'].fill = fill_40p
             
             ws.row_dimensions[row_idx].height = 18.0
@@ -934,54 +941,54 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
 
         last_data_row = row_idx - 1
         if last_data_row >= 2:
-            ws.auto_filter.ref = f'A1:I{last_data_row}'
+            ws.auto_filter.ref = f'A1:J{last_data_row}'
 
         carrier_counts = Counter([t['carrier'] for t in ordered_trips if t.get('carrier')])
         if carrier_counts:
-            ws['K3'] = 'Перевозчик'
-            ws['K3'].font = font_header
-            ws['K3'].border = border_summary_header
-            ws['L3'] = 'Рейсы'
+            ws['L3'] = 'Перевозчик'
             ws['L3'].font = font_header
-            ws['L3'].alignment = Alignment(horizontal='center')
             ws['L3'].border = border_summary_header
-            ws['M3'] = '%'
+            ws['M3'] = 'Рейсы'
             ws['M3'].font = font_header
             ws['M3'].alignment = Alignment(horizontal='center')
             ws['M3'].border = border_summary_header
+            ws['N3'] = '%'
+            ws['N3'].font = font_header
+            ws['N3'].alignment = Alignment(horizontal='center')
+            ws['N3'].border = border_summary_header
             
             s_row = 4
             for car, cnt in carrier_counts.most_common():
-                ws[f'K{s_row}'] = car
-                ws[f'K{s_row}'].font = font_regular
-                ws[f'K{s_row}'].border = border_thin
-                
-                ws[f'L{s_row}'] = f'=COUNTIF(G$2:G${last_data_row}, K{s_row})'
+                ws[f'L{s_row}'] = car
                 ws[f'L{s_row}'].font = font_regular
-                ws[f'L{s_row}'].alignment = Alignment(horizontal='center')
                 ws[f'L{s_row}'].border = border_thin
                 
-                total_target_row = 4 + len(carrier_counts)
-                ws[f'M{s_row}'] = f'=L{s_row}/L{total_target_row}'
+                ws[f'M{s_row}'] = f'=COUNTIF(G$2:G${last_data_row}, L{s_row})'
                 ws[f'M{s_row}'].font = font_regular
-                ws[f'M{s_row}'].number_format = '0.0%'
-                ws[f'M{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'M{s_row}'].alignment = Alignment(horizontal='center')
                 ws[f'M{s_row}'].border = border_thin
+                
+                total_target_row = 4 + len(carrier_counts)
+                ws[f'N{s_row}'] = f'=M{s_row}/M{total_target_row}'
+                ws[f'N{s_row}'].font = font_regular
+                ws[f'N{s_row}'].number_format = '0.0%'
+                ws[f'N{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'N{s_row}'].border = border_thin
                 s_row += 1
                 
-            ws[f'K{s_row}'] = 'Всего'
-            ws[f'K{s_row}'].font = font_header
-            ws[f'K{s_row}'].border = border_total
-            
-            ws[f'L{s_row}'] = f'=SUM(L4:L{s_row-1})'
+            ws[f'L{s_row}'] = 'Всего'
             ws[f'L{s_row}'].font = font_header
-            ws[f'L{s_row}'].alignment = Alignment(horizontal='center')
             ws[f'L{s_row}'].border = border_total
             
-            ws[f'M{s_row}'] = '100%'
+            ws[f'M{s_row}'] = f'=SUM(M4:M{s_row-1})'
             ws[f'M{s_row}'].font = font_header
-            ws[f'M{s_row}'].alignment = Alignment(horizontal='right')
+            ws[f'M{s_row}'].alignment = Alignment(horizontal='center')
             ws[f'M{s_row}'].border = border_total
+            
+            ws[f'N{s_row}'] = '100%'
+            ws[f'N{s_row}'].font = font_header
+            ws[f'N{s_row}'].alignment = Alignment(horizontal='right')
+            ws[f'N{s_row}'].border = border_total
 
     wb_out.save(output_path)
     print(f"Таблица успешно создана: {output_path}")
@@ -1025,6 +1032,8 @@ def refresh_schedule_file_summary(excel_path):
         bottom=Side(style='double', color='000000')
     )
     
+    tariffs_cached = load_tariffs_matrix(os.path.dirname(excel_path))
+    
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         h_a = str(ws['A1'].value or '').strip().lower()
@@ -1045,12 +1054,14 @@ def refresh_schedule_file_summary(excel_path):
                 date_val = ws[f'B{r}'].value
                 time_val = ws[f'C{r}'].value
                 deliv_col = 'I'
+                tariff_col = 'J'
             else:
                 city = ws[f'G{r}'].value
                 carrier = ws[f'I{r}'].value
                 date_val = ws[f'D{r}'].value
                 time_val = ws[f'E{r}'].value
                 deliv_col = 'K'
+                tariff_col = 'L'
                 
             if not city or not str(city).strip() or 'итого' in str(city).lower() or 'всего' in str(city).lower():
                 continue
@@ -1071,17 +1082,37 @@ def refresh_schedule_file_summary(excel_path):
                 ws[f'{deliv_col}{r}'].alignment = Alignment(horizontal='center', vertical='center')
                 ws[f'{deliv_col}{r}'].border = border_thin
                 
+            # Проверяем и актуализируем тариф
+            if not ws[f'{tariff_col}{r}'].value or str(ws[f'{tariff_col}{r}'].value).strip() in ('', '0'):
+                calc_tar = tariffs_cached.get(str(city).strip(), {}).get(str(carrier).strip(), 0)
+                if calc_tar > 0:
+                    ws[f'{tariff_col}{r}'].value = calc_tar
+            if ws[f'{tariff_col}{r}'].value:
+                ws[f'{tariff_col}{r}'].number_format = '#,##0 ₽'
+                ws[f'{tariff_col}{r}'].alignment = Alignment(horizontal='right', vertical='center')
+                ws[f'{tariff_col}{r}'].border = border_thin
+                
         if not data_rows:
             continue
             
         last_data_row = max(data_rows)
         
         if fmt == 'starts_a':
-            ws.auto_filter.ref = f'A1:I{last_data_row}'
-            # Очищаем сводную таблицу в K..M
+            if not ws['J1'].value:
+                ws['J1'].value = 'Тариф'
+                ws['J1'].font = font_header
+                ws['J1'].border = border_summary_header
+                ws['J1'].alignment = Alignment(horizontal='center', vertical='center')
+            ws.column_dimensions['J'].width = 16
+            ws.column_dimensions['K'].width = 5
+            ws.column_dimensions['L'].width = 22
+            ws.column_dimensions['M'].width = 10
+            ws.column_dimensions['N'].width = 10
+            ws.auto_filter.ref = f'A1:J{last_data_row}'
+            # Очищаем сводную таблицу в K..P
             max_clear = max(ws.max_row + 10, 35)
             for r in range(3, max_clear):
-                for col_l in ['K', 'L', 'M']:
+                for col_l in ['K', 'L', 'M', 'N', 'O', 'P']:
                     cell = ws[f'{col_l}{r}']
                     cell.value = None
                     cell.border = None
@@ -1090,50 +1121,50 @@ def refresh_schedule_file_summary(excel_path):
             carrier_counts = Counter(carriers_in_sheet)
             
             if carrier_counts:
-                ws['K3'] = 'Перевозчик'
-                ws['K3'].font = font_header
-                ws['K3'].border = border_summary_header
-                ws['L3'] = 'Рейсы'
+                ws['L3'] = 'Перевозчик'
                 ws['L3'].font = font_header
-                ws['L3'].alignment = Alignment(horizontal='center')
                 ws['L3'].border = border_summary_header
-                ws['M3'] = '%'
+                ws['M3'] = 'Рейсы'
                 ws['M3'].font = font_header
                 ws['M3'].alignment = Alignment(horizontal='center')
                 ws['M3'].border = border_summary_header
+                ws['N3'] = '%'
+                ws['N3'].font = font_header
+                ws['N3'].alignment = Alignment(horizontal='center')
+                ws['N3'].border = border_summary_header
                 
                 s_row = 4
                 for car, cnt in carrier_counts.most_common():
-                    ws[f'K{s_row}'] = car
-                    ws[f'K{s_row}'].font = font_regular
-                    ws[f'K{s_row}'].border = border_thin
-                    
-                    ws[f'L{s_row}'] = f'=COUNTIF(G$2:G${last_data_row}, K{s_row})'
+                    ws[f'L{s_row}'] = car
                     ws[f'L{s_row}'].font = font_regular
-                    ws[f'L{s_row}'].alignment = Alignment(horizontal='center')
                     ws[f'L{s_row}'].border = border_thin
                     
-                    total_target_row = 4 + len(carrier_counts)
-                    ws[f'M{s_row}'] = f'=L{s_row}/L{total_target_row}'
+                    ws[f'M{s_row}'] = f'=COUNTIF(G$2:G${last_data_row}, L{s_row})'
                     ws[f'M{s_row}'].font = font_regular
-                    ws[f'M{s_row}'].number_format = '0.0%'
-                    ws[f'M{s_row}'].alignment = Alignment(horizontal='right')
+                    ws[f'M{s_row}'].alignment = Alignment(horizontal='center')
                     ws[f'M{s_row}'].border = border_thin
+                    
+                    total_target_row = 4 + len(carrier_counts)
+                    ws[f'N{s_row}'] = f'=M{s_row}/M{total_target_row}'
+                    ws[f'N{s_row}'].font = font_regular
+                    ws[f'N{s_row}'].number_format = '0.0%'
+                    ws[f'N{s_row}'].alignment = Alignment(horizontal='right')
+                    ws[f'N{s_row}'].border = border_thin
                     s_row += 1
                     
-                ws[f'K{s_row}'] = 'Всего'
-                ws[f'K{s_row}'].font = font_header
-                ws[f'K{s_row}'].border = border_total
-                
-                ws[f'L{s_row}'] = f'=SUM(L4:L{s_row-1})'
+                ws[f'L{s_row}'] = 'Всего'
                 ws[f'L{s_row}'].font = font_header
-                ws[f'L{s_row}'].alignment = Alignment(horizontal='center')
                 ws[f'L{s_row}'].border = border_total
                 
-                ws[f'M{s_row}'] = '100%'
+                ws[f'M{s_row}'] = f'=SUM(M4:M{s_row-1})'
                 ws[f'M{s_row}'].font = font_header
-                ws[f'M{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'M{s_row}'].alignment = Alignment(horizontal='center')
                 ws[f'M{s_row}'].border = border_total
+                
+                ws[f'N{s_row}'] = '100%'
+                ws[f'N{s_row}'].font = font_header
+                ws[f'N{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'N{s_row}'].border = border_total
         else:
             # Для прежнего формата (начинается с C)
             ws.auto_filter.ref = f'C1:K{last_data_row}'
