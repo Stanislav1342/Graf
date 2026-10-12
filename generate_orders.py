@@ -653,7 +653,12 @@ def fill_order_docx(
             set_field(p, "Дата: ", today_date_str, prefix_spaces="                                                                                                                ")
         elif txt.startswith("Кому:"):
             # Шапка Кому
-            set_field(p, "Кому: ", carrier, align=WD_ALIGN_PARAGRAPH.RIGHT)
+            carrier_clean = str(carrier or "").strip()
+            carrier_norm = carrier_clean.lower().replace("ё", "е")
+            if "дергачев" in carrier_norm:
+                set_field(p, "Кому:", "_____________", align=WD_ALIGN_PARAGRAPH.RIGHT)
+            else:
+                set_field(p, "Кому: ", carrier_clean, align=WD_ALIGN_PARAGRAPH.RIGHT)
         elif txt.startswith("Маршрут:"):
             # Маршрут
             set_field(p, "Маршрут: ", route_value)
