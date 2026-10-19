@@ -401,8 +401,11 @@ def index_page():
                 Файл: -
               </div>
             </div>
-            <div>
-              <button class="btn btn-primary" onclick="openFileSelectModal()" style="gap: 6px;">
+            <div style="display:flex; gap: 8px; flex-wrap: wrap;">
+              <button class="btn btn-primary" id="directReloadBtn" onclick="reloadCurrentActiveFile()" style="display:none; gap: 6px;">
+                ⚡ Пересобрать и обновить график
+              </button>
+              <button class="btn btn-outline" onclick="openFileSelectModal()" style="gap: 6px; background: #fff;">
                 🔄 Выбрать / Обновить из Excel
               </button>
             </div>
@@ -671,6 +674,65 @@ def index_page():
     let availableCarriers = [];
     let availableOrdersCarriers = [];
     let currentOrdersSendTarget = null;
+    let currentLoadedFilename = null;
+
+    function updateScheduleUIWithData(data) {
+      document.getElementById('statWeek').innerText = data.week_range;
+      document.getElementById('statTotal').innerText = data.total_trips + ' машин';
+      document.getElementById('statCarriers').innerText = data.carriers.length;
+      document.getElementById('statCost').innerText = data.total_cost || '-';
+      document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
+      currentLoadedFilename = data.filename;
+
+      availableCarriers = data.carriers;
+      const container = document.getElementById('carriersContainer');
+      container.innerHTML = '';
+      const select = document.getElementById('carrierSelect');
+      select.innerHTML = '';
+
+      data.carriers.forEach(c => {
+        const costStr = c.cost_str ? ` • ${c.cost_str}` : '';
+        container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count} рейсов${costStr}</span></div>`;
+        select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов${costStr})</option>`;
+      });
+
+      document.getElementById('resultCard').style.display = 'block';
+      document.getElementById('emailCard').style.display = 'block';
+      const directBtn = document.getElementById('directReloadBtn');
+      if (directBtn) directBtn.style.display = 'inline-flex';
+    }
+
+    async function reloadCurrentActiveFile() {
+      if (!currentLoadedFilename) return;
+      const btn = document.getElementById('directReloadBtn');
+      const origText = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = '⏳ Пересборка...';
+
+      try {
+        const resp = await fetch('/api/select-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: currentLoadedFilename })
+        });
+        const data = await resp.json();
+        btn.disabled = false;
+        btn.innerText = origText;
+
+        if (data.status === 'success') {
+          updateScheduleUIWithData(data);
+          const notice = document.getElementById('reloadNotice');
+          notice.innerText = `✅ График '${currentLoadedFilename}' успешно пересобран по всем правилам! Новые данные применены.`;
+          notice.style.display = 'block';
+        } else {
+          alert('Ошибка обновления графика: ' + data.message);
+        }
+      } catch (e) {
+        btn.disabled = false;
+        btn.innerText = origText;
+        alert('Ошибка связи с сервером: ' + e);
+      }
+    }
 
     // Переключение между вкладками
     function switchTab(tabName) {
@@ -750,26 +812,7 @@ def index_page():
         const data = await resp.json();
         
         if (data.status === 'success') {
-          document.getElementById('statWeek').innerText = data.week_range;
-          document.getElementById('statTotal').innerText = data.total_trips + ' машин';
-          document.getElementById('statCarriers').innerText = data.carriers.length;
-          document.getElementById('statCost').innerText = data.total_cost || '-';
-          document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
-
-          availableCarriers = data.carriers;
-          const container = document.getElementById('carriersContainer');
-          container.innerHTML = '';
-          const select = document.getElementById('carrierSelect');
-          select.innerHTML = '';
-
-          data.carriers.forEach(c => {
-            const costStr = c.cost_str ? ` • ${c.cost_str}` : '';
-            container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count} рейсов${costStr}</span></div>`;
-            select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов${costStr})</option>`;
-          });
-
-          document.getElementById('resultCard').style.display = 'block';
-          document.getElementById('emailCard').style.display = 'block';
+          updateScheduleUIWithData(data);
           processBtn.innerText = '✅ Обработано';
         } else {
           alert('Ошибка: ' + (data.message || 'Не удалось обработать'));
@@ -857,29 +900,9 @@ def index_page():
         confirmBtn.innerText = 'Выбрать и обновить данные';
 
         if (data.status === 'success') {
-          document.getElementById('statWeek').innerText = data.week_range;
-          document.getElementById('statTotal').innerText = data.total_trips + ' машин';
-          document.getElementById('statCarriers').innerText = data.carriers.length;
-          document.getElementById('statCost').innerText = data.total_cost || '-';
-          document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
-
-          availableCarriers = data.carriers;
-          const container = document.getElementById('carriersContainer');
-          container.innerHTML = '';
-          const select = document.getElementById('carrierSelect');
-          select.innerHTML = '';
-
-          data.carriers.forEach(c => {
-            const costStr = c.cost_str ? ` • ${c.cost_str}` : '';
-            container.innerHTML += `<div class="carrier-tag">${c.name} <span>${c.count} рейсов${costStr}</span></div>`;
-            select.innerHTML += `<option value="${c.name}">${c.name} (${c.count} рейсов${costStr})</option>`;
-          });
-
-          document.getElementById('resultCard').style.display = 'block';
-          document.getElementById('emailCard').style.display = 'block';
-
+          updateScheduleUIWithData(data);
           const notice = document.getElementById('reloadNotice');
-          notice.innerText = `✅ Успешно загружен актуальный файл '${filename}'. Все ручные правки применены!`;
+          notice.innerText = `✅ График '${filename}' успешно пересобран по всем правилам! Новые данные применены.`;
           notice.style.display = 'block';
 
           closeFileSelectModal();

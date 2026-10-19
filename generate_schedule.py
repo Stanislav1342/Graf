@@ -973,10 +973,17 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
 
 def refresh_schedule_file_summary(excel_path):
     """
-    Обновляет сводные таблицы на всех листах Excel-файла графика,
-    а также актуализирует дату доставки, если пользователь добавил/удалил строки
-    или изменил перевозчиков вручную в Excel.
-    Никаких формул или лишних значений в столбцы A и B больше не пишется!
+    Полностью пересобирает листы графика отгрузок после ручных правок пользователя в Excel:
+    1. Считывает все рейсы с каждого листа (включая добавленные/измененные вручную строки).
+    2. Выстраивает направления строго по эталонной очередности из Последовательность направлений.xlsx.
+    3. Присваивает корректные номера машин (1, 2, 3...) по каждому направлению в этот день.
+    4. Заново рассчитывает время погрузки строго по правилу 2 машины в час (Вс с 08:30, остальные дни с 09:00).
+    5. Заново рассчитывает дату и время доставки по обновленному времени отгрузки.
+    6. Актуализирует паллеты (40 для Ярославля и Хабаровска по правилам с зеленой заливкой, 33 для остальных).
+    7. Актуализирует тарифы по Тарифы.xlsx (если тариф не был задан или был 0, либо изменился перевозчик).
+    8. Полностью очищает старую область данных и выводит чистую таблицу в формате A..J (начиная со столбца Месяц).
+    9. Пересобирает сводные таблицы по перевозчикам в столбцах L..N и обновляет автофильтр.
+    10. Сохраняет файл.
     """
     if not excel_path or not os.path.exists(excel_path):
         return False
@@ -984,18 +991,30 @@ def refresh_schedule_file_summary(excel_path):
     try:
         wb = openpyxl.load_workbook(excel_path)
     except Exception as e:
-        print(f"Ошибка открытия файла для обновления сводки: {e}")
+        print(f"Ошибка открытия файла для обновления: {e}")
         return False
         
     modified = False
+    base_dir = os.path.dirname(excel_path)
+    tariffs_cached = load_tariffs_matrix(base_dir)
     
     font_header = Font(name='Arial', size=10, bold=True)
     font_regular = Font(name='Arial', size=10)
+    font_bold_center = Font(name='Times New Roman', size=11, bold=True)
+    font_city = Font(name='Times New Roman', size=11, bold=True)
+    font_carrier = Font(name='Times New Roman', size=11)
+
     border_thin = Border(
         left=Side(style='thin', color='D9D9D9'),
         right=Side(style='thin', color='D9D9D9'),
         top=Side(style='thin', color='D9D9D9'),
         bottom=Side(style='thin', color='D9D9D9')
+    )
+    border_header = Border(
+        left=Side(style='thin', color='A6A6A6'),
+        right=Side(style='thin', color='A6A6A6'),
+        top=Side(style='thin', color='A6A6A6'),
+        bottom=Side(style='medium', color='000000')
     )
     border_summary_header = Border(
         left=Side(style='thin', color='BFBFBF'),
@@ -1007,214 +1026,373 @@ def refresh_schedule_file_summary(excel_path):
         top=Side(style='thin', color='000000'),
         bottom=Side(style='double', color='000000')
     )
+    fill_40p = PatternFill(start_color='E2EFDA', end_color='E2EFDA', fill_type='solid')
+
+    col_widths = {
+        'A': 13, 'B': 12, 'C': 15, 'D': 6, 'E': 22, 'F': 15,
+        'G': 26, 'H': 14, 'I': 18, 'J': 16, 'K': 5, 'L': 22, 'M': 10, 'N': 10
+    }
     
-    tariffs_cached = load_tariffs_matrix(os.path.dirname(excel_path))
+    carriers_norm = {
+        'СИЯНИЕТК': 'ТК Сияние',
+        'Сияние': 'ТК Сияние',
+        'АО "НАЦИОНАЛЬНЫЙ ПЕРЕВОЗЧИК"': 'АО Национальный',
+        'Наткар': 'АО Национальный',
+        'ООО «Буш-Автопром»': 'Буш-Авто',
+        'Буш': 'Буш-Авто',
+        'Буш-Авто': 'Буш-Авто',
+        'НОРД ЛАЙН МСК': 'НОРДЛАЙН',
+        'Норд Лайн': 'НОРДЛАЙН',
+        'ООО "ЕМАНТРАНСАВТО"': 'ЕманТрансАвто',
+        'ЕманТрансАвто': 'ЕманТрансАвто',
+        'ОЛИМП': 'Олимп',
+        'Олимп': 'Олимп',
+        'ООО "Караван"': 'Караван',
+        'Караван': 'Караван',
+        'Виллайн': 'Виллайн',
+        'ООО ТК "АЗИМУТ"': 'Азимут',
+        'АЗИМУТ': 'Азимут',
+        'Азимут': 'Азимут',
+        'Веб Логистика': 'Веб-Логистика',
+        'Веб-Логистика': 'Веб-Логистика',
+        'Агро-Авто': 'Агро-Авто',
+        'Примум': 'Примум',
+        'Васино': 'Васино',
+        'ТДМ*': 'ТДМ*',
+        'Гринлайн': 'Гринлайн',
+        '700 Дорог': '700 Дорог',
+        'УТК': 'УТК',
+        'ИП Коршунов': 'ИП Коршунов',
+        'ИП Мельник': 'ИП Мельник',
+        'ИП Гусманов': 'ИП Гусманов',
+        'Авангард': 'Авангард'
+    }
     
+    city_norm = {
+        'СПБ': 'Санкт-Петербург',
+        'Санкт- Петербург': 'Санкт-Петербург',
+        'Санкт-Петербург': 'Санкт-Петербург',
+        'УФА': 'Уфа'
+    }
+
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         h_a = str(ws['A1'].value or '').strip().lower()
         h_c = str(ws['C1'].value or '').strip().lower()
-        
+        h_e = str(ws['E1'].value or '').strip().lower()
+
         if 'месяц' in h_a:
             fmt = 'starts_a'
-        elif 'месяц' in h_c or ('время' in str(ws['E1'].value or '').lower()):
+        elif 'месяц' in h_c or 'время' in h_e:
             fmt = 'starts_c'
+        elif 'дата' in h_c:
+            fmt = 'legacy'
         else:
-            continue
+            has_day = any(d[0] in sheet_name for d in DAYS_MAPPING)
+            if has_day:
+                fmt = 'starts_a'
+            else:
+                continue
+
+        # 1. Определяем день недели (d_name) и дату (cur_date)
+        d_name = None
+        for d_cand, _, _ in DAYS_MAPPING:
+            if d_cand in sheet_name:
+                d_name = d_cand
+                break
+                
+        cur_date = None
+        for r in range(2, min(ws.max_row + 1, 50)):
+            val = ws[f'B{r}'].value if fmt == 'starts_a' else (ws[f'D{r}'].value if fmt == 'starts_c' else ws[f'C{r}'].value)
+            if isinstance(val, datetime):
+                cur_date = datetime(val.year, val.month, val.day)
+                break
+            elif val:
+                try:
+                    cur_date = datetime.strptime(str(val).strip(), '%d.%m.%Y')
+                    break
+                except Exception:
+                    pass
+                    
+        if not cur_date:
+            m_d = re.search(r'(\d{1,2})\.(\d{2})', sheet_name)
+            if m_d:
+                d_n, m_n = int(m_d.group(1)), int(m_d.group(2))
+                y_n = datetime.now().year if datetime.now().year >= 2026 else 2026
+                cur_date = datetime(y_n, m_n, d_n)
+            else:
+                cur_date = datetime.now()
+
+        if not d_name and cur_date:
+            for d_cand, _, w_idx in DAYS_MAPPING:
+                if w_idx == cur_date.weekday():
+                    d_name = d_cand
+                    break
+        if not d_name:
+            d_name = 'Пн'
             
-        data_rows = []
+        d_short = d_name.lower()
+        d_str = cur_date.strftime('%d.%m.%Y')
+        d_month = RUSSIAN_MONTHS[cur_date.month]
+
+        # 2. Считываем все существующие строки рейсов
+        raw_trips = []
         for r in range(2, ws.max_row + 1):
             if fmt == 'starts_a':
-                city = ws[f'E{r}'].value
-                carrier = ws[f'G{r}'].value
-                date_val = ws[f'B{r}'].value
-                time_val = ws[f'C{r}'].value
-                deliv_col = 'I'
-                tariff_col = 'J'
+                c_city = ws[f'E{r}'].value
+                c_car = ws[f'G{r}'].value
+                c_pal = ws[f'H{r}'].value
+                c_tar = ws[f'J{r}'].value
+            elif fmt == 'starts_c':
+                c_city = ws[f'G{r}'].value
+                c_car = ws[f'I{r}'].value
+                c_pal = ws[f'J{r}'].value
+                c_tar = ws[f'L{r}'].value
             else:
-                city = ws[f'G{r}'].value
-                carrier = ws[f'I{r}'].value
-                date_val = ws[f'D{r}'].value
-                time_val = ws[f'E{r}'].value
-                deliv_col = 'K'
-                tariff_col = 'L'
-                
-            if not city or not str(city).strip() or 'итого' in str(city).lower() or 'всего' in str(city).lower():
+                c_city = ws[f'G{r}'].value
+                c_car = ws[f'I{r}'].value
+                c_pal = ws[f'H{r}'].value
+                c_tar = ws[f'J{r}'].value
+
+            if not c_city or not str(c_city).strip():
                 continue
-            if not carrier or not str(carrier).strip():
+            city_str = str(c_city).strip()
+            if any(w in city_str.lower() for w in ['итого', 'всего', 'перевозчик', 'рейсы', 'тариф']):
                 continue
-            if not date_val:
-                continue
-                
-            data_rows.append(r)
-            
-            # Если дата доставки пустая, рассчитываем её
-            if not ws[f'{deliv_col}{r}'].value or str(ws[f'{deliv_col}{r}'].value).strip() == '':
-                dep_d = date_val
-                dep_t = str(time_val or '09:00:00').strip()
-                deliv_dt = calculate_delivery_datetime(dep_d, dep_t, str(city).strip())
-                ws[f'{deliv_col}{r}'].value = deliv_dt.strftime('%d.%m.%Y %H:%M')
-                ws[f'{deliv_col}{r}'].font = font_regular
-                ws[f'{deliv_col}{r}'].alignment = Alignment(horizontal='center', vertical='center')
-                ws[f'{deliv_col}{r}'].border = border_thin
-                
-            # Проверяем и актуализируем тариф
-            if not ws[f'{tariff_col}{r}'].value or str(ws[f'{tariff_col}{r}'].value).strip() in ('', '0'):
-                calc_tar = tariffs_cached.get(str(city).strip(), {}).get(str(carrier).strip(), 0)
-                if calc_tar > 0:
-                    ws[f'{tariff_col}{r}'].value = calc_tar
-            if ws[f'{tariff_col}{r}'].value:
-                ws[f'{tariff_col}{r}'].number_format = '#,##0 ₽'
-                ws[f'{tariff_col}{r}'].alignment = Alignment(horizontal='right', vertical='center')
-                ws[f'{tariff_col}{r}'].border = border_thin
-                
-        if not data_rows:
+
+            city_clean = city_norm.get(city_str, city_str)
+            car_clean = str(c_car or '').strip()
+            car_clean = carriers_norm.get(car_clean, car_clean) if car_clean else 'ТК Сияние'
+
+            tariff_num = 0
+            if c_tar is not None:
+                try:
+                    clean_t = str(c_tar).replace(' ', '').replace('₽', '').replace('\xa0', '').replace(',', '.')
+                    tariff_num = int(float(clean_t))
+                except Exception:
+                    tariff_num = 0
+
+            pallets_num = None
+            if c_pal is not None:
+                try:
+                    p_val = int(float(str(c_pal).strip()))
+                    if p_val in (33, 40):
+                        pallets_num = p_val
+                except Exception:
+                    pass
+
+            raw_trips.append({
+                'orig_index': len(raw_trips),
+                'city': city_clean,
+                'carrier': car_clean,
+                'tariff': tariff_num,
+                'pallets': pallets_num
+            })
+
+        if not raw_trips:
             continue
-            
-        last_data_row = max(data_rows)
-        
-        if fmt == 'starts_a':
-            if not ws['J1'].value:
-                ws['J1'].value = 'Тариф'
-                ws['J1'].font = font_header
-                ws['J1'].border = border_summary_header
-                ws['J1'].alignment = Alignment(horizontal='center', vertical='center')
-            ws.column_dimensions['J'].width = 16
-            ws.column_dimensions['K'].width = 5
-            ws.column_dimensions['L'].width = 22
-            ws.column_dimensions['M'].width = 10
-            ws.column_dimensions['N'].width = 10
+
+        # 3. Сортируем направления строго по эталонной очередности
+        ordered_cities = get_ordered_cities(list({t['city'] for t in raw_trips}), base_dir)
+        city_to_rank = {c: i for i, c in enumerate(ordered_cities)}
+        sorted_trips = sorted(raw_trips, key=lambda t: (city_to_rank.get(t['city'], 999), t['orig_index']))
+
+        # 4. Нумеруем машины (1, 2, 3...), актуализируем паллеты и тарифы
+        city_truck_counters = Counter()
+        for t in sorted_trips:
+            c = t['city']
+            city_truck_counters[c] += 1
+            tr_num = city_truck_counters[c]
+            t['truck_num'] = tr_num
+
+            # Паллеты: Ярославль и Хабаровск по регламенту
+            if c == 'Ярославль':
+                t['pallets'] = 40 if (tr_num == 1 or (d_name == 'Вт' and tr_num == 2)) else 33
+            elif c == 'Хабаровск':
+                t['pallets'] = 40 if (d_name == 'Чт' and tr_num == 1) else 33
+            else:
+                if t['pallets'] not in (33, 40):
+                    t['pallets'] = 33
+
+            # Тариф: автозаполнение из Тарифы.xlsx
+            calc_tar = tariffs_cached.get(c, {}).get(t['carrier'], 0)
+            known_city_tariffs = set(tariffs_cached.get(c, {}).values())
+            if t['tariff'] == 0 and calc_tar > 0:
+                t['tariff'] = calc_tar
+            elif calc_tar > 0 and t['tariff'] != calc_tar:
+                # Если в ячейке остался тариф другого перевозчика по этому городу (сменили перевозчика)
+                if t['tariff'] in known_city_tariffs:
+                    t['tariff'] = calc_tar
+
+        # 5. Пересчитываем время погрузки строго по правилу: 2 машины в час
+        for trip_idx, t in enumerate(sorted_trips):
+            time_str = get_trip_time(d_name, t['city'], t['truck_num'], trip_index_in_day=trip_idx)
+            t['time'] = time_str
+            deliv_dt = calculate_delivery_datetime(cur_date, time_str, t['city'])
+            t['delivery_dt'] = deliv_dt
+            t['delivery_str'] = deliv_dt.strftime('%d.%m.%Y %H:%M')
+
+        # 6. Полностью очищаем старые данные на листе
+        max_clear = max(ws.max_row + 15, len(sorted_trips) + 20, 50)
+        for r in range(2, max_clear + 1):
+            for col_l in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P']:
+                cell = ws[f'{col_l}{r}']
+                cell.value = None
+                cell.border = None
+                cell.fill = PatternFill(fill_type=None)
+
+        # 7. Настраиваем заголовки чистого формата A..J
+        ws.views.sheetView[0].showGridLines = True
+        for col_l, w in col_widths.items():
+            ws.column_dimensions[col_l].width = w
+        ws.row_dimensions[1].height = 26.0
+
+        headers = {
+            'A': 'Месяц', 'B': 'Дата', 'C': 'Время погрузки', 'D': '',
+            'E': 'Направление', 'F': 'Номер Машины', 'G': 'Перевозчик',
+            'H': 'Кол-во паллет ', 'I': 'Дата доставки', 'J': 'Тариф'
+        }
+        for col_l, h_text in headers.items():
+            cell = ws[f'{col_l}1']
+            cell.value = h_text
+            cell.font = font_header
+            cell.border = border_header
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+        # 8. Записываем пересобранные строки
+        row_idx = 2
+        for tr in sorted_trips:
+            c_a = ws[f'A{row_idx}']
+            c_a.value = d_month
+            c_a.font = font_regular
+            c_a.alignment = Alignment(horizontal='center', vertical='center')
+            c_a.border = border_thin
+
+            c_b = ws[f'B{row_idx}']
+            c_b.value = d_str
+            c_b.font = font_regular
+            c_b.alignment = Alignment(horizontal='center', vertical='center')
+            c_b.border = border_thin
+
+            c_c = ws[f'C{row_idx}']
+            c_c.value = tr['time']
+            c_c.font = font_regular
+            c_c.alignment = Alignment(horizontal='center', vertical='center')
+            c_c.border = border_thin
+
+            c_d = ws[f'D{row_idx}']
+            c_d.value = d_short
+            c_d.font = font_header
+            c_d.alignment = Alignment(horizontal='center', vertical='center')
+            c_d.border = border_thin
+
+            c_e = ws[f'E{row_idx}']
+            c_e.value = tr['city']
+            c_e.font = font_city
+            c_e.alignment = Alignment(horizontal='left', vertical='center')
+            c_e.border = border_thin
+
+            c_f = ws[f'F{row_idx}']
+            c_f.value = tr['truck_num']
+            c_f.font = font_bold_center
+            c_f.alignment = Alignment(horizontal='center', vertical='center')
+            c_f.border = border_thin
+
+            c_g = ws[f'G{row_idx}']
+            c_g.value = tr['carrier']
+            c_g.font = font_carrier
+            c_g.alignment = Alignment(horizontal='center', vertical='center')
+            c_g.border = border_thin
+
+            c_h = ws[f'H{row_idx}']
+            c_h.value = tr['pallets']
+            c_h.font = font_regular
+            c_h.alignment = Alignment(horizontal='center', vertical='center')
+            c_h.border = border_thin
+
+            c_i = ws[f'I{row_idx}']
+            c_i.value = tr['delivery_str']
+            c_i.font = font_regular
+            c_i.alignment = Alignment(horizontal='center', vertical='center')
+            c_i.border = border_thin
+
+            c_j = ws[f'J{row_idx}']
+            c_j.value = tr.get('tariff', 0)
+            c_j.font = font_regular
+            c_j.number_format = '#,##0 ₽'
+            c_j.alignment = Alignment(horizontal='right', vertical='center')
+            c_j.border = border_thin
+
+            if tr['pallets'] == 40:
+                for col_l in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
+                    ws[f'{col_l}{row_idx}'].fill = fill_40p
+
+            ws.row_dimensions[row_idx].height = 18.0
+            row_idx += 1
+
+        last_data_row = row_idx - 1
+        if last_data_row >= 2:
             ws.auto_filter.ref = f'A1:J{last_data_row}'
-            # Очищаем сводную таблицу в K..P
-            max_clear = max(ws.max_row + 10, 35)
-            for r in range(3, max_clear):
-                for col_l in ['K', 'L', 'M', 'N', 'O', 'P']:
-                    cell = ws[f'{col_l}{r}']
-                    cell.value = None
-                    cell.border = None
-            
-            carriers_in_sheet = [str(ws[f'G{r}'].value).strip() for r in data_rows if ws[f'G{r}'].value]
-            carrier_counts = Counter(carriers_in_sheet)
-            
-            if carrier_counts:
-                ws['L3'] = 'Перевозчик'
-                ws['L3'].font = font_header
-                ws['L3'].border = border_summary_header
-                ws['M3'] = 'Рейсы'
-                ws['M3'].font = font_header
-                ws['M3'].alignment = Alignment(horizontal='center')
-                ws['M3'].border = border_summary_header
-                ws['N3'] = '%'
-                ws['N3'].font = font_header
-                ws['N3'].alignment = Alignment(horizontal='center')
-                ws['N3'].border = border_summary_header
-                
-                s_row = 4
-                for car, cnt in carrier_counts.most_common():
-                    ws[f'L{s_row}'] = car
-                    ws[f'L{s_row}'].font = font_regular
-                    ws[f'L{s_row}'].border = border_thin
-                    
-                    ws[f'M{s_row}'] = f'=COUNTIF(G$2:G${last_data_row}, L{s_row})'
-                    ws[f'M{s_row}'].font = font_regular
-                    ws[f'M{s_row}'].alignment = Alignment(horizontal='center')
-                    ws[f'M{s_row}'].border = border_thin
-                    
-                    total_target_row = 4 + len(carrier_counts)
-                    ws[f'N{s_row}'] = f'=M{s_row}/M{total_target_row}'
-                    ws[f'N{s_row}'].font = font_regular
-                    ws[f'N{s_row}'].number_format = '0.0%'
-                    ws[f'N{s_row}'].alignment = Alignment(horizontal='right')
-                    ws[f'N{s_row}'].border = border_thin
-                    s_row += 1
-                    
-                ws[f'L{s_row}'] = 'Всего'
-                ws[f'L{s_row}'].font = font_header
-                ws[f'L{s_row}'].border = border_total
-                
-                ws[f'M{s_row}'] = f'=SUM(M4:M{s_row-1})'
-                ws[f'M{s_row}'].font = font_header
+
+        # 9. Формируем актуальную сводную таблицу по перевозчикам в L..N
+        carrier_counts = Counter([t['carrier'] for t in sorted_trips if t.get('carrier')])
+        if carrier_counts:
+            ws['L3'] = 'Перевозчик'
+            ws['L3'].font = font_header
+            ws['L3'].border = border_summary_header
+            ws['M3'] = 'Рейсы'
+            ws['M3'].font = font_header
+            ws['M3'].alignment = Alignment(horizontal='center')
+            ws['M3'].border = border_summary_header
+            ws['N3'] = '%'
+            ws['N3'].font = font_header
+            ws['N3'].alignment = Alignment(horizontal='center')
+            ws['N3'].border = border_summary_header
+
+            s_row = 4
+            for car, cnt in carrier_counts.most_common():
+                ws[f'L{s_row}'] = car
+                ws[f'L{s_row}'].font = font_regular
+                ws[f'L{s_row}'].border = border_thin
+
+                ws[f'M{s_row}'] = f'=COUNTIF(G$2:G${last_data_row}, L{s_row})'
+                ws[f'M{s_row}'].font = font_regular
                 ws[f'M{s_row}'].alignment = Alignment(horizontal='center')
-                ws[f'M{s_row}'].border = border_total
-                
-                ws[f'N{s_row}'] = '100%'
-                ws[f'N{s_row}'].font = font_header
+                ws[f'M{s_row}'].border = border_thin
+
+                total_target_row = 4 + len(carrier_counts)
+                ws[f'N{s_row}'] = f'=M{s_row}/M{total_target_row}'
+                ws[f'N{s_row}'].font = font_regular
+                ws[f'N{s_row}'].number_format = '0.0%'
                 ws[f'N{s_row}'].alignment = Alignment(horizontal='right')
-                ws[f'N{s_row}'].border = border_total
-        else:
-            # Для прежнего формата (начинается с C)
-            ws.auto_filter.ref = f'C1:K{last_data_row}'
-            # Очищаем сводную таблицу в M..P
-            max_clear = max(ws.max_row + 10, 35)
-            for r in range(3, max_clear):
-                for col_l in ['M', 'N', 'O', 'P']:
-                    cell = ws[f'{col_l}{r}']
-                    cell.value = None
-                    cell.border = None
-            
-            # Очищаем старые формулы в A, если были
-            for r in range(2, last_data_row + 1):
-                ws[f'A{r}'].value = None
-                ws[f'A{r}'].border = None
-                
-            carriers_in_sheet = [str(ws[f'I{r}'].value).strip() for r in data_rows if ws[f'I{r}'].value]
-            carrier_counts = Counter(carriers_in_sheet)
-            
-            if carrier_counts:
-                ws['M3'] = 'Перевозчик'
-                ws['M3'].font = font_header
-                ws['M3'].border = border_summary_header
-                ws['N3'] = 'Рейсы'
-                ws['N3'].font = font_header
-                ws['N3'].alignment = Alignment(horizontal='center')
-                ws['N3'].border = border_summary_header
-                ws['O3'] = '%'
-                ws['O3'].font = font_header
-                ws['O3'].alignment = Alignment(horizontal='center')
-                ws['O3'].border = border_summary_header
-                
-                s_row = 4
-                for car, cnt in carrier_counts.most_common():
-                    ws[f'M{s_row}'] = car
-                    ws[f'M{s_row}'].font = font_regular
-                    ws[f'M{s_row}'].border = border_thin
-                    
-                    ws[f'N{s_row}'] = f'=COUNTIF(I$2:I${last_data_row}, M{s_row})'
-                    ws[f'N{s_row}'].font = font_regular
-                    ws[f'N{s_row}'].alignment = Alignment(horizontal='center')
-                    ws[f'N{s_row}'].border = border_thin
-                    
-                    total_target_row = 4 + len(carrier_counts)
-                    ws[f'O{s_row}'] = f'=N{s_row}/N{total_target_row}'
-                    ws[f'O{s_row}'].font = font_regular
-                    ws[f'O{s_row}'].number_format = '0.0%'
-                    ws[f'O{s_row}'].alignment = Alignment(horizontal='right')
-                    ws[f'O{s_row}'].border = border_thin
-                    s_row += 1
-                    
-                ws[f'M{s_row}'] = 'Всего'
-                ws[f'M{s_row}'].font = font_header
-                ws[f'M{s_row}'].border = border_total
-                
-                ws[f'N{s_row}'] = f'=SUM(N4:N{s_row-1})'
-                ws[f'N{s_row}'].font = font_header
-                ws[f'N{s_row}'].alignment = Alignment(horizontal='center')
-                ws[f'N{s_row}'].border = border_total
-                
-                ws[f'O{s_row}'] = '100%'
-                ws[f'O{s_row}'].font = font_header
-                ws[f'O{s_row}'].alignment = Alignment(horizontal='right')
-                ws[f'O{s_row}'].border = border_total
-                
+                ws[f'N{s_row}'].border = border_thin
+                s_row += 1
+
+            ws[f'L{s_row}'] = 'Всего'
+            ws[f'L{s_row}'].font = font_header
+            ws[f'L{s_row}'].border = border_total
+
+            ws[f'M{s_row}'] = f'=SUM(M4:M{s_row-1})'
+            ws[f'M{s_row}'].font = font_header
+            ws[f'M{s_row}'].alignment = Alignment(horizontal='center')
+            ws[f'M{s_row}'].border = border_total
+
+            ws[f'N{s_row}'] = '100%'
+            ws[f'N{s_row}'].font = font_header
+            ws[f'N{s_row}'].alignment = Alignment(horizontal='right')
+            ws[f'N{s_row}'].border = border_total
+
         modified = True
-        
+
     if modified:
         try:
             wb.save(excel_path)
-            print(f"Сводные таблицы успешно обновлены в файле: {excel_path}")
+            print(f"График успешно пересобран и сохранен в: {excel_path}")
         except Exception as e:
-            print(f"Предупреждение: не удалось сохранить файл {excel_path}: {e}")
-            
+            print(f"Ошибка сохранения файла {excel_path}: {e}")
+            wb.close()
+            return False
+
     wb.close()
     return True
 
