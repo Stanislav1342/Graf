@@ -607,6 +607,206 @@ def parse_plan_file(plan_path):
     wb.close()
     return plan_trips, start_date
 
+MANUAL_FILL_COLOR = 'FFF2CC'  # Мягкий желтый цвет для рейсов, добавленных сотрудником вручную
+
+
+def is_cell_manual_fill(cell):
+    """Проверяет, выделена ли ячейка цветом ручного добавления (или пользовательским маркером в Excel)"""
+    if not cell or not cell.fill or not cell.fill.fill_type or cell.fill.fill_type == 'none':
+        return False
+    sc = cell.fill.start_color
+    if not sc:
+        return False
+    if sc.type == 'rgb':
+        rgb = str(sc.rgb or '').upper()
+        if not rgb:
+            return False
+        hex6 = rgb[-6:] if len(rgb) >= 6 else rgb
+        # Игнорируем прозрачный/белый и стандартный зеленый цвет 40 паллет (E2EFDA)
+        if hex6 in ('000000', 'FFFFFF', 'E2EFDA'):
+            return False
+        return True
+    elif sc.type in ('theme', 'indexed'):
+        if sc.type == 'indexed' and sc.indexed in (64, 65):
+            return False
+        return True
+    return False
+
+
+def get_no_tariffs_copy_path(excel_path):
+    """Возвращает путь для копии графика без колонки тарифов в той же папке"""
+    if not excel_path:
+        return None
+    folder = os.path.dirname(os.path.abspath(excel_path))
+    fname = os.path.basename(excel_path)
+    base, ext = os.path.splitext(fname)
+    base_clean = re.sub(r'\s*\(без тарифов\)\s*$', '', base, flags=re.IGNORECASE).strip()
+    return os.path.join(folder, f"{base_clean} (без тарифов){ext}")
+
+
+def create_schedule_copy_without_tariffs(excel_path):
+    """
+    Создает по тому же пути копию файла графика без колонки 'Тариф' (столбец J).
+    Все форматирование, цветовая разметка новых рейсов (FFF2CC) и 40 паллет (E2EFDA)
+    сохраняются для столбцов A..I, а сводная таблица сдвигается в K..M.
+    """
+    if not excel_path or not os.path.exists(excel_path):
+        return None
+    copy_path = get_no_tariffs_copy_path(excel_path)
+    if not copy_path:
+        return None
+
+    try:
+        wb = openpyxl.load_workbook(excel_path)
+        font_header = Font(name='Arial', size=10, bold=True)
+        font_regular = Font(name='Arial', size=10)
+        border_thin = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9')
+        )
+        border_summary_header = Border(
+            left=Side(style='thin', color='BFBFBF'),
+            right=Side(style='thin', color='BFBFBF'),
+            top=Side(style='thin', color='BFBFBF'),
+            bottom=Side(style='thin', color='000000')
+        )
+        border_total = Border(
+            top=Side(style='thin', color='000000'),
+            bottom=Side(style='double', color='000000')
+        )
+
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            h_a = str(ws['A1'].value or '').strip().lower()
+            if 'месяц' not in h_a:
+                continue
+
+            # Определяем последнюю строку данных и список перевозчиков
+            last_data_row = 1
+            carriers_in_sheet = []
+            for r in range(2, ws.max_row + 1):
+                c_val = ws[f'E{r}'].value
+                if c_val and str(c_val).strip():
+                    last_data_row = r
+                    car_val = ws[f'G{r}'].value
+                    if car_val and str(car_val).strip():
+                        carriers_in_sheet.append(str(car_val).strip())
+
+            # Очищаем столбец J (Тариф) и старую область сводной таблицы K..P
+            max_clear = max(ws.max_row + 10, 50)
+            for r in range(1, max_clear + 1):
+                for col_l in ['J', 'K', 'L', 'M', 'N', 'O', 'P']:
+                    cell = ws[f'{col_l}{r}']
+                    cell.value = None
+                    cell.border = None
+                    cell.fill = PatternFill(fill_type=None)
+                    cell.number_format = 'General'
+
+            # Настраиваем ширину столбцов: J — узкий разделитель, K..M — сводная таблица
+            ws.column_dimensions['J'].width = 5
+            ws.column_dimensions['K'].width = 22
+            ws.column_dimensions['L'].width = 10
+            ws.column_dimensions['M'].width = 10
+
+            if last_data_row >= 2:
+                ws.auto_filter.ref = f'A1:I{last_data_row}'
+
+            # Перестраиваем сводную таблицу в столбцах K..M
+            carrier_counts = Counter(carriers_in_sheet)
+            if carrier_counts and last_data_row >= 2:
+                ws['K3'] = 'Перевозчик'
+                ws['K3'].font = font_header
+                ws['K3'].border = border_summary_header
+                ws['L3'] = 'Рейсы'
+                ws['L3'].font = font_header
+                ws['L3'].alignment = Alignment(horizontal='center')
+                ws['L3'].border = border_summary_header
+                ws['M3'] = '%'
+                ws['M3'].font = font_header
+                ws['M3'].alignment = Alignment(horizontal='center')
+                ws['M3'].border = border_summary_header
+
+                s_row = 4
+                total_target_row = 4 + len(carrier_counts)
+                for car, _ in carrier_counts.most_common():
+                    ws[f'K{s_row}'] = car
+                    ws[f'K{s_row}'].font = font_regular
+                    ws[f'K{s_row}'].border = border_thin
+
+                    ws[f'L{s_row}'] = f'=COUNTIF(G$2:G${last_data_row}, K{s_row})'
+                    ws[f'L{s_row}'].font = font_regular
+                    ws[f'L{s_row}'].alignment = Alignment(horizontal='center')
+                    ws[f'L{s_row}'].border = border_thin
+
+                    ws[f'M{s_row}'] = f'=L{s_row}/L{total_target_row}'
+                    ws[f'M{s_row}'].font = font_regular
+                    ws[f'M{s_row}'].number_format = '0.0%'
+                    ws[f'M{s_row}'].alignment = Alignment(horizontal='right')
+                    ws[f'M{s_row}'].border = border_thin
+                    s_row += 1
+
+                ws[f'K{s_row}'] = 'Всего'
+                ws[f'K{s_row}'].font = font_header
+                ws[f'K{s_row}'].border = border_total
+
+                ws[f'L{s_row}'] = f'=SUM(L4:L{s_row-1})'
+                ws[f'L{s_row}'].font = font_header
+                ws[f'L{s_row}'].alignment = Alignment(horizontal='center')
+                ws[f'L{s_row}'].border = border_total
+
+                ws[f'M{s_row}'] = '100%'
+                ws[f'M{s_row}'].font = font_header
+                ws[f'M{s_row}'].alignment = Alignment(horizontal='right')
+                ws[f'M{s_row}'].border = border_total
+
+        wb.save(copy_path)
+        wb.close()
+        print(f"Копия графика без тарифов успешно сохранена: {copy_path}")
+        return copy_path
+    except Exception as e:
+        print(f"Ошибка при создании копии без тарифов ({copy_path}): {e}")
+        return None
+
+
+def _get_baseline_store_path(excel_path):
+    folder = os.path.dirname(os.path.abspath(excel_path))
+    return os.path.join(folder, '.schedule_baselines.json')
+
+
+def _save_schedule_baseline(excel_path, sheets_baseline):
+    """Сохраняет эталонный состав рейсов при первичной генерации графика для точного определения ручных добавлений"""
+    try:
+        store_path = _get_baseline_store_path(excel_path)
+        data = {}
+        if os.path.exists(store_path):
+            try:
+                with open(store_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        key = os.path.basename(excel_path)
+        data[key] = sheets_baseline
+        with open(store_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Не удалось сохранить baseline для {excel_path}: {e}")
+
+
+def _load_schedule_baseline(excel_path):
+    """Загружает эталонный состав рейсов для файла графика"""
+    try:
+        store_path = _get_baseline_store_path(excel_path)
+        if not os.path.exists(store_path):
+            return None
+        with open(store_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data.get(os.path.basename(excel_path))
+    except Exception:
+        return None
+
+
 def parse_final_schedule_file(excel_path):
     """
     Считывает готовый график отгрузок (Недельные графики.xlsx), 
@@ -647,6 +847,7 @@ def parse_final_schedule_file(excel_path):
                 pallets = ws[f'H{row}'].value or 33
                 deliv_val = ws[f'I{row}'].value
                 tariff_val = ws[f'J{row}'].value
+                check_cell = ws[f'E{row}']
             elif fmt == 'starts_c':
                 month_val = ws[f'C{row}'].value or ''
                 date_val = ws[f'D{row}'].value
@@ -658,6 +859,7 @@ def parse_final_schedule_file(excel_path):
                 pallets = ws[f'J{row}'].value or 33
                 deliv_val = ws[f'K{row}'].value
                 tariff_val = ws[f'L{row}'].value
+                check_cell = ws[f'G{row}']
             else:
                 date_val = ws[f'C{row}'].value
                 day_val = ws[f'D{row}'].value or ''
@@ -669,6 +871,7 @@ def parse_final_schedule_file(excel_path):
                 tariff_val = ws[f'J{row}'].value
                 time_val = ws[f'K{row}'].value
                 deliv_val = None
+                check_cell = ws[f'G{row}']
             
             if not city_val or str(city_val).strip() == '' or 'Итого' in str(city_val):
                 continue
@@ -727,7 +930,8 @@ def parse_final_schedule_file(excel_path):
                 'tariff': tariff_num,
                 'time': time_str,
                 'delivery_dt': delivery_dt,
-                'delivery_str': delivery_str
+                'delivery_str': delivery_str,
+                'is_manual': is_cell_manual_fill(check_cell)
             })
             
     wb.close()
@@ -778,6 +982,7 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
     }
 
     all_scheduled_trips = []
+    sheets_baseline = {}
 
     for d_name, d_short, offset in DAYS_MAPPING:
         cur_date = start_date + timedelta(days=offset)
@@ -840,10 +1045,16 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
                     'tariff': tariff,
                     'time': time_str,
                     'delivery_dt': deliv_dt,
-                    'delivery_str': deliv_str
+                    'delivery_str': deliv_str,
+                    'is_manual': False
                 }
                 ordered_trips.append(tr_data)
                 all_scheduled_trips.append(tr_data)
+
+        sheets_baseline[sheet_title] = [
+            {'city': tr['city'], 'truck_num': tr['truck_num'], 'carrier': tr['carrier']}
+            for tr in ordered_trips
+        ]
 
         row_idx = 2
         for tr in ordered_trips:
@@ -967,6 +1178,8 @@ def build_schedule_from_plan(plan_trips, start_date, output_path):
             ws[f'N{s_row}'].border = border_total
 
     wb_out.save(output_path)
+    _save_schedule_baseline(output_path, sheets_baseline)
+    create_schedule_copy_without_tariffs(output_path)
     print(f"Таблица успешно создана: {output_path}")
     return all_scheduled_trips
 
@@ -975,15 +1188,16 @@ def refresh_schedule_file_summary(excel_path):
     """
     Полностью пересобирает листы графика отгрузок после ручных правок пользователя в Excel:
     1. Считывает все рейсы с каждого листа (включая добавленные/измененные вручную строки).
-    2. Выстраивает направления строго по эталонной очередности из Последовательность направлений.xlsx.
-    3. Присваивает корректные номера машин (1, 2, 3...) по каждому направлению в этот день.
-    4. Заново рассчитывает время погрузки строго по правилу 2 машины в час (Вс с 08:30, остальные дни с 09:00).
-    5. Заново рассчитывает дату и время доставки по обновленному времени отгрузки.
-    6. Актуализирует паллеты (40 для Ярославля и Хабаровска по правилам с зеленой заливкой, 33 для остальных).
-    7. Актуализирует тарифы по Тарифы.xlsx (если тариф не был задан или был 0, либо изменился перевозчик).
-    8. Полностью очищает старую область данных и выводит чистую таблицу в формате A..J (начиная со столбца Месяц).
-    9. Пересобирает сводные таблицы по перевозчикам в столбцах L..N и обновляет автофильтр.
-    10. Сохраняет файл.
+    2. Определяет новые рейсы, которые сотрудник добавил руками, и помечает их цветом (FFF2CC).
+    3. Выстраивает направления строго по эталонной очередности из Последовательность направлений.xlsx.
+    4. Присваивает корректные номера машин (1, 2, 3...) по каждому направлению в этот день.
+    5. Заново рассчитывает время погрузки строго по правилу 2 машины в час (Вс с 08:30, остальные дни с 09:00).
+    6. Заново рассчитывает дату и время доставки по обновленному времени отгрузки.
+    7. Актуализирует паллеты (40 для Ярославля и Хабаровска по правилам с зеленой заливкой, 33 для остальных).
+    8. Актуализирует тарифы по Тарифы.xlsx (если тариф не был задан или был 0, либо изменился перевозчик).
+    9. Полностью очищает старую область данных и выводит чистую таблицу в формате A..J (начиная со столбца Месяц).
+    10. Пересобирает сводные таблицы по перевозчикам в столбцах L..N и обновляет автофильтр.
+    11. Сохраняет файл и автоматически создает/обновляет по тому же пути копию без колонки тарифов.
     """
     if not excel_path or not os.path.exists(excel_path):
         return False
@@ -997,6 +1211,8 @@ def refresh_schedule_file_summary(excel_path):
     modified = False
     base_dir = os.path.dirname(excel_path)
     tariffs_cached = load_tariffs_matrix(base_dir)
+    saved_baseline = _load_schedule_baseline(excel_path)
+    inferred_baseline = {}
     
     font_header = Font(name='Arial', size=10, bold=True)
     font_regular = Font(name='Arial', size=10)
@@ -1027,6 +1243,7 @@ def refresh_schedule_file_summary(excel_path):
         bottom=Side(style='double', color='000000')
     )
     fill_40p = PatternFill(start_color='E2EFDA', end_color='E2EFDA', fill_type='solid')
+    fill_manual = PatternFill(start_color=MANUAL_FILL_COLOR, end_color=MANUAL_FILL_COLOR, fill_type='solid')
 
     col_widths = {
         'A': 13, 'B': 12, 'C': 15, 'D': 6, 'E': 22, 'F': 15,
@@ -1135,24 +1352,52 @@ def refresh_schedule_file_summary(excel_path):
         d_str = cur_date.strftime('%d.%m.%Y')
         d_month = RUSSIAN_MONTHS[cur_date.month]
 
-        # 2. Считываем все существующие строки рейсов
+        # 2. Считываем все существующие строки рейсов и определяем добавленные вручную
         raw_trips = []
+        seen_city_trucks = set()
+
         for r in range(2, ws.max_row + 1):
             if fmt == 'starts_a':
-                c_city = ws[f'E{r}'].value
-                c_car = ws[f'G{r}'].value
-                c_pal = ws[f'H{r}'].value
-                c_tar = ws[f'J{r}'].value
+                cell_month = ws[f'A{r}']
+                cell_date = ws[f'B{r}']
+                cell_time = ws[f'C{r}']
+                cell_day = ws[f'D{r}']
+                cell_city = ws[f'E{r}']
+                cell_truck = ws[f'F{r}']
+                cell_car = ws[f'G{r}']
+                cell_pal = ws[f'H{r}']
+                cell_deliv = ws[f'I{r}']
+                cell_tar = ws[f'J{r}']
+                row_check_cells = [cell_month, cell_date, cell_time, cell_day, cell_city, cell_truck, cell_car, cell_pal, cell_deliv]
             elif fmt == 'starts_c':
-                c_city = ws[f'G{r}'].value
-                c_car = ws[f'I{r}'].value
-                c_pal = ws[f'J{r}'].value
-                c_tar = ws[f'L{r}'].value
+                cell_month = ws[f'C{r}']
+                cell_date = ws[f'D{r}']
+                cell_time = ws[f'E{r}']
+                cell_day = ws[f'F{r}']
+                cell_city = ws[f'G{r}']
+                cell_truck = ws[f'H{r}']
+                cell_car = ws[f'I{r}']
+                cell_pal = ws[f'J{r}']
+                cell_deliv = ws[f'K{r}']
+                cell_tar = ws[f'L{r}']
+                row_check_cells = [cell_month, cell_date, cell_time, cell_day, cell_city, cell_truck, cell_car, cell_pal, cell_deliv]
             else:
-                c_city = ws[f'G{r}'].value
-                c_car = ws[f'I{r}'].value
-                c_pal = ws[f'H{r}'].value
-                c_tar = ws[f'J{r}'].value
+                cell_date = ws[f'C{r}']
+                cell_day = ws[f'D{r}']
+                cell_month = ws[f'E{r}']
+                cell_truck = ws[f'F{r}']
+                cell_city = ws[f'G{r}']
+                cell_pal = ws[f'H{r}']
+                cell_car = ws[f'I{r}']
+                cell_tar = ws[f'J{r}']
+                cell_time = ws[f'K{r}']
+                cell_deliv = None
+                row_check_cells = [cell_date, cell_day, cell_month, cell_truck, cell_city, cell_pal, cell_car, cell_time]
+
+            c_city = cell_city.value
+            c_car = cell_car.value
+            c_pal = cell_pal.value
+            c_tar = cell_tar.value
 
             if not c_city or not str(c_city).strip():
                 continue
@@ -1161,8 +1406,62 @@ def refresh_schedule_file_summary(excel_path):
                 continue
 
             city_clean = city_norm.get(city_str, city_str)
-            car_clean = str(c_car or '').strip()
-            car_clean = carriers_norm.get(car_clean, car_clean) if car_clean else 'ТК Сияние'
+            car_raw_str = str(c_car or '').strip()
+            car_clean = carriers_norm.get(car_raw_str, car_raw_str) if car_raw_str else 'ТК Сияние'
+
+            # Признак 1: строка уже была выделена цветом (при прошлом обновлении или самим сотрудником)
+            already_colored = any(is_cell_manual_fill(c) for c in row_check_cells if c is not None)
+
+            # Признак 2: отсутствуют автоматически генерируемые поля (Месяц, Дата, Время, День, № Машины, Паллеты, Доставка)
+            auto_cells = [cell_month, cell_date, cell_time, cell_day, cell_truck, cell_pal]
+            if cell_deliv is not None:
+                auto_cells.append(cell_deliv)
+            missing_auto_fields = any(c.value is None or str(c.value).strip() == '' for c in auto_cells) or not car_raw_str
+
+            # Признак 3: строка добавлена вручную без фирменных границ или шрифта Times New Roman в ячейке направления
+            no_border = (cell_city.border is None or cell_city.border.left is None or not cell_city.border.left.style)
+            wrong_font = (cell_city.font is not None and cell_city.font.name not in ('Times New Roman', None))
+            missing_script_style = no_border or wrong_font
+
+            # Признак 4: строка скопирована из другого дня или другого направления
+            copied_mismatch = False
+            if not missing_auto_fields:
+                # Проверка совпадения даты и дня недели с текущим листом
+                if isinstance(cell_date.value, datetime):
+                    r_date_s = cell_date.value.strftime('%d.%m.%Y')
+                else:
+                    r_date_s = str(cell_date.value or '').strip()
+                r_day_s = str(cell_day.value or '').strip().lower()
+                if (r_date_s and r_date_s != d_str) or (r_day_s and r_day_s != d_short):
+                    copied_mismatch = True
+
+                # Проверка дублирования (Направление, Номер машины) при копировании строки
+                try:
+                    orig_tr_num = int(float(str(cell_truck.value).strip()))
+                except Exception:
+                    orig_tr_num = None
+                if orig_tr_num is not None:
+                    if (city_clean, orig_tr_num) in seen_city_trucks:
+                        copied_mismatch = True
+                    seen_city_trucks.add((city_clean, orig_tr_num))
+
+                # Проверка несоответствия даты доставки направлению (если скопировали чужую строку и поменяли город)
+                if cell_deliv is not None and cell_deliv.value:
+                    if isinstance(cell_time.value, (datetime, time)):
+                        r_time_s = cell_time.value.strftime('%H:%M:%S')
+                    else:
+                        r_time_s = str(cell_time.value or '09:00:00').strip()
+                        if len(r_time_s) == 5:
+                            r_time_s += ':00'
+                    if isinstance(cell_deliv.value, datetime):
+                        r_deliv_s = cell_deliv.value.strftime('%d.%m.%Y %H:%M')
+                    else:
+                        r_deliv_s = str(cell_deliv.value).strip()
+                    exp_deliv_s = calculate_delivery_datetime(cur_date, r_time_s, city_clean).strftime('%d.%m.%Y %H:%M')
+                    if r_deliv_s != exp_deliv_s:
+                        copied_mismatch = True
+
+            is_manual_row = bool(already_colored or missing_auto_fields or missing_script_style or copied_mismatch)
 
             tariff_num = 0
             if c_tar is not None:
@@ -1186,16 +1485,42 @@ def refresh_schedule_file_summary(excel_path):
                 'city': city_clean,
                 'carrier': car_clean,
                 'tariff': tariff_num,
-                'pallets': pallets_num
+                'pallets': pallets_num,
+                'is_manual': is_manual_row
             })
 
         if not raw_trips:
             continue
 
+        # Сверка с сохраненным baseline (на случай полного копирования строки со всеми полями)
+        if saved_baseline and sheet_name in saved_baseline:
+            base_sheet_trips = saved_baseline[sheet_name]
+            base_city_counts = Counter(item['city'] for item in base_sheet_trips)
+            trips_by_city = defaultdict(list)
+            for t in raw_trips:
+                trips_by_city[t['city']].append(t)
+            for c_name, c_list in trips_by_city.items():
+                b_cnt = base_city_counts.get(c_name, 0)
+                if len(c_list) > b_cnt:
+                    extra_needed = len(c_list) - b_cnt
+                    already_man = sum(1 for t in c_list if t.get('is_manual'))
+                    to_mark = extra_needed - already_man
+                    if to_mark > 0:
+                        for t in reversed(c_list):
+                            if not t.get('is_manual') and to_mark > 0:
+                                t['is_manual'] = True
+                                to_mark -= 1
+
         # 3. Сортируем направления строго по эталонной очередности
         ordered_cities = get_ordered_cities(list({t['city'] for t in raw_trips}), base_dir)
         city_to_rank = {c: i for i, c in enumerate(ordered_cities)}
-        sorted_trips = sorted(raw_trips, key=lambda t: (city_to_rank.get(t['city'], 999), t['orig_index']))
+        sorted_trips = sorted(raw_trips, key=lambda t: (city_to_rank.get(t['city'], 999), 1 if t.get('is_manual') else 0, t['orig_index']))
+
+        # Если baseline для этого файла еще не существовал, фиксируем исходные (не ручные) рейсы
+        inferred_baseline[sheet_name] = [
+            {'city': t['city'], 'truck_num': i + 1, 'carrier': t['carrier']}
+            for i, t in enumerate([x for x in sorted_trips if not x.get('is_manual')])
+        ]
 
         # 4. Нумеруем машины (1, 2, 3...), актуализируем паллеты и тарифы
         city_truck_counters = Counter()
@@ -1323,7 +1648,13 @@ def refresh_schedule_file_summary(excel_path):
             c_j.alignment = Alignment(horizontal='right', vertical='center')
             c_j.border = border_thin
 
-            if tr['pallets'] == 40:
+            # Приоритет цветовой заливки:
+            # 1) Новые рейсы, добавленные сотрудником вручную -> желтый (FFF2CC)
+            # 2) Рейсы на 40 паллет -> светло-зеленый (E2EFDA)
+            if tr.get('is_manual'):
+                for col_l in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
+                    ws[f'{col_l}{row_idx}'].fill = fill_manual
+            elif tr['pallets'] == 40:
                 for col_l in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
                     ws[f'{col_l}{row_idx}'].fill = fill_40p
 
@@ -1387,6 +1718,9 @@ def refresh_schedule_file_summary(excel_path):
     if modified:
         try:
             wb.save(excel_path)
+            if not saved_baseline and inferred_baseline:
+                _save_schedule_baseline(excel_path, inferred_baseline)
+            create_schedule_copy_without_tariffs(excel_path)
             print(f"График успешно пересобран и сохранен в: {excel_path}")
         except Exception as e:
             print(f"Ошибка сохранения файла {excel_path}: {e}")

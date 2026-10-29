@@ -11,6 +11,7 @@
 Заявки/
 *.zip
 output/
+.schedule_baselines.json
 
 # Python cache & environments
 __pycache__/

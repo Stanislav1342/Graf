@@ -400,6 +400,9 @@ def index_page():
               <div style="font-size: 13px; font-weight: 600; color: var(--primary); margin-top: 4px;" id="currentFileLabel">
                 Файл: -
               </div>
+              <div style="font-size: 12px; font-weight: 600; color: #15803d; margin-top: 2px;" id="currentNoTariffFileLabel">
+                Копия без тарифов: -
+              </div>
             </div>
             <div style="display:flex; gap: 8px; flex-wrap: wrap;">
               <button class="btn btn-primary" id="directReloadBtn" onclick="reloadCurrentActiveFile()" style="display:none; gap: 6px;">
@@ -682,6 +685,10 @@ def index_page():
       document.getElementById('statCarriers').innerText = data.carriers.length;
       document.getElementById('statCost').innerText = data.total_cost || '-';
       document.getElementById('currentFileLabel').innerText = 'Файл: ' + data.filename;
+      const noTarLabel = document.getElementById('currentNoTariffFileLabel');
+      if (noTarLabel && data.no_tariff_filename) {
+        noTarLabel.innerText = 'Копия без тарифов: ' + data.no_tariff_filename;
+      }
       currentLoadedFilename = data.filename;
 
       availableCarriers = data.carriers;
@@ -722,7 +729,8 @@ def index_page():
         if (data.status === 'success') {
           updateScheduleUIWithData(data);
           const notice = document.getElementById('reloadNotice');
-          notice.innerText = `✅ График '${currentLoadedFilename}' успешно пересобран по всем правилам! Новые данные применены.`;
+          const manualInfo = data.manual_trips > 0 ? ` Выделено цветом новых ручных рейсов: ${data.manual_trips} шт.` : '';
+          notice.innerText = `✅ График '${currentLoadedFilename}' и его копия без тарифов успешно пересобраны!${manualInfo}`;
           notice.style.display = 'block';
         } else {
           alert('Ошибка обновления графика: ' + data.message);
@@ -902,7 +910,8 @@ def index_page():
         if (data.status === 'success') {
           updateScheduleUIWithData(data);
           const notice = document.getElementById('reloadNotice');
-          notice.innerText = `✅ График '${filename}' успешно пересобран по всем правилам! Новые данные применены.`;
+          const manualInfo = data.manual_trips > 0 ? ` Выделено цветом новых ручных рейсов: ${data.manual_trips} шт.` : '';
+          notice.innerText = `✅ График '${filename}' и его копия без тарифов успешно пересобраны!${manualInfo}`;
           notice.style.display = 'block';
 
           closeFileSelectModal();
@@ -1252,6 +1261,10 @@ async def upload_file(file: UploadFile = File(...)):
             for k, v in carrier_counts.most_common()
         ]
         
+        no_tariff_path = core.get_no_tariffs_copy_path(target_path)
+        no_tariff_filename = os.path.basename(no_tariff_path) if no_tariff_path else ""
+        manual_trips_count = sum(1 for t in all_trips if t.get("is_manual"))
+
         CURRENT_STATE["all_trips"] = all_trips
         CURRENT_STATE["week_range"] = week_range
         CURRENT_STATE["total_trips"] = len(all_trips)
@@ -1268,6 +1281,8 @@ async def upload_file(file: UploadFile = File(...)):
             "total_cost": total_cost_str,
             "carriers": carriers_list,
             "filename": out_filename,
+            "no_tariff_filename": no_tariff_filename,
+            "manual_trips": manual_trips_count,
             "is_edited": is_edited_schedule
         }
     except Exception as e:
@@ -1286,6 +1301,8 @@ def list_ready_files():
         
         for fname in os.listdir(schedules_dir):
             if fname.startswith("~$") or not fname.endswith((".xlsx", ".xlsm")):
+                continue
+            if "(без тарифов)" in fname.lower():
                 continue
             full_path = os.path.join(schedules_dir, fname)
             if not os.path.isfile(full_path):
@@ -1355,6 +1372,10 @@ def select_file(req: SelectFileRequest):
             for k, v in carrier_counts.most_common()
         ]
         
+        no_tariff_path = core.get_no_tariffs_copy_path(target_path)
+        no_tariff_filename = os.path.basename(no_tariff_path) if no_tariff_path else ""
+        manual_trips_count = sum(1 for t in trips if t.get("is_manual"))
+
         CURRENT_STATE["all_trips"] = trips
         CURRENT_STATE["week_range"] = week_range
         CURRENT_STATE["total_trips"] = len(trips)
@@ -1367,6 +1388,8 @@ def select_file(req: SelectFileRequest):
         return {
             "status": "success",
             "filename": req.filename,
+            "no_tariff_filename": no_tariff_filename,
+            "manual_trips": manual_trips_count,
             "week_range": week_range,
             "total_trips": len(trips),
             "total_cost": total_cost_str,
