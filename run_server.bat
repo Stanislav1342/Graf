@@ -16,6 +16,13 @@ if exist .venv\Scripts\activate.bat (
     )
 )
 
+echo Проверка необходимых библиотек Python...
+python -c "import multipart" 2>nul
+if errorlevel 1 (
+    echo [Установка] Установка python-multipart...
+    python -m pip install python-multipart
+)
+
 echo Запуск сервера...
 python server.py
 pause
