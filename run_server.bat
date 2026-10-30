@@ -6,23 +6,26 @@ echo Запуск локального сервера графиков отгр�
 echo ========================================================
 echo.
 
-if exist .venv\Scripts\activate.bat (
-    echo Активация виртуального окружения .venv...
-    call .venv\Scripts\activate.bat
-) else (
-    if exist ..\.venv\Scripts\activate.bat (
-        echo Активация виртуального окружения ..\.venv...
-        call ..\.venv\Scripts\activate.bat
+set "PY_CMD=python"
+
+:: Проверяем локальное виртуальное окружение
+if exist .venv\Scripts\python.exe (
+    .venv\Scripts\python.exe --version >nul 2>&1
+    if not errorlevel 1 (
+        echo Использование виртуального окружения .venv...
+        set "PY_CMD=.venv\Scripts\python.exe"
+    ) else (
+        echo [Инфо] Виртуальное окружение .venv заблокировано политикой, используем системный Python...
     )
 )
 
 echo Проверка необходимых библиотек Python...
-python -c "import multipart" 2>nul
+%PY_CMD% -c "import multipart" 2>nul
 if errorlevel 1 (
     echo [Установка] Установка python-multipart...
-    python -m pip install python-multipart
+    %PY_CMD% -m pip install python-multipart
 )
 
 echo Запуск сервера...
-python server.py
+%PY_CMD% server.py
 pause
